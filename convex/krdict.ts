@@ -40,6 +40,24 @@ export interface KrdictViewResult {
   derivedWords: { word: string; targetCode: number }[];
 }
 
+// --- Fetch with retry ---
+
+async function fetchWithRetry(url: string, retries = 5): Promise<Response> {
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await fetch(url);
+    } catch (err) {
+      if (i < retries - 1) {
+        console.error(`Fetch failed (attempt ${i + 1}/${retries}), retrying in 1s...`);
+        await new Promise((r) => setTimeout(r, 1000));
+      } else {
+        throw err;
+      }
+    }
+  }
+  throw new Error("unreachable");
+}
+
 // --- Search ---
 
 export async function searchWord(
@@ -56,7 +74,7 @@ export async function searchWord(
     type2: "chinese",
   });
 
-  const res = await fetch(
+  const res = await fetchWithRetry(
     `https://krdict.korean.go.kr/api/search?${params}`
   );
   if (!res.ok) {
@@ -97,7 +115,7 @@ export async function viewEntry(
     trans_lang: "1",
   });
 
-  const res = await fetch(
+  const res = await fetchWithRetry(
     `https://krdict.korean.go.kr/api/view?${params}`
   );
   if (!res.ok) {
