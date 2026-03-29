@@ -1,6 +1,19 @@
 import { Bot, InlineKeyboard, webhookCallback } from "grammy";
 import { httpAction } from "./_generated/server.js";
-import { searchWord, viewEntry } from "./krdict.js";
+import {
+  searchWord,
+  viewEntry,
+  type KrdictSearchResult,
+} from "./krdict.js";
+
+function findExactMatch(
+  results: KrdictSearchResult[],
+  query: string
+): { exact: KrdictSearchResult | null; suggestions: KrdictSearchResult[] } {
+  const exact = results.find((r) => r.word === query) ?? null;
+  const suggestions = exact ? [] : results.slice(0, 5);
+  return { exact, suggestions };
+}
 
 function escapeHtml(text: string): string {
   return text
@@ -19,11 +32,12 @@ function formatSearchResult(r: {
 }): string {
   const lines: string[] = [];
   const originPart = r.origin ? ` [${escapeHtml(r.origin)}]` : "";
-  lines.push(`<b>${escapeHtml(r.word)}</b>${originPart}`);
+  lines.push(`📖 <b>${escapeHtml(r.word)}</b>${originPart}`);
   if (r.pos) lines.push(`<i>${escapeHtml(r.pos)}</i>`);
   lines.push("");
   if (r.definition) lines.push(escapeHtml(r.definition));
-  if (r.transWord) lines.push(`<b>EN:</b> ${escapeHtml(r.transWord)}`);
+  if (r.transWord || r.transDfn) lines.push("");
+  if (r.transWord) lines.push(`🇬🇧 ${escapeHtml(r.transWord)}`);
   if (r.transDfn) lines.push(escapeHtml(r.transDfn));
   return lines.join("\n");
 }
@@ -42,27 +56,27 @@ async function formatDetailedView(
   const lines: string[] = [];
   const wordLabel = view.word ?? char;
   const originPart = view.origin ? ` (${escapeHtml(view.origin)})` : "";
-  lines.push(`<b>${escapeHtml(wordLabel)}</b>${originPart}`);
+  lines.push(`📖 <b>${escapeHtml(wordLabel)}</b>${originPart}`);
 
   if (view.pronunciation)
-    lines.push(`Pronunciation: ${escapeHtml(view.pronunciation)}`);
-  if (view.grade) lines.push(`Grade: ${escapeHtml(view.grade)}`);
+    lines.push(`🔊 ${escapeHtml(view.pronunciation)}`);
+  if (view.grade) lines.push(`📊 ${escapeHtml(view.grade)}`);
   lines.push("");
 
   for (let i = 0; i < view.senses.length; i++) {
     const s = view.senses[i];
     lines.push(`<b>${i + 1}.</b> ${escapeHtml(s.definition)}`);
-    if (s.transWord) lines.push(`   EN: ${escapeHtml(s.transWord)}`);
+    if (s.transWord) lines.push(`   🇬🇧 ${escapeHtml(s.transWord)}`);
     if (s.transDfn) lines.push(`   ${escapeHtml(s.transDfn)}`);
     for (const rel of s.relatedWords) {
-      lines.push(`   → ${escapeHtml(rel.word)} (${escapeHtml(rel.type)})`);
+      lines.push(`   🔗 ${escapeHtml(rel.word)} (${escapeHtml(rel.type)})`);
     }
   }
 
   if (view.derivedWords.length > 0) {
     lines.push("");
     lines.push(
-      `<b>Derived:</b> ${view.derivedWords.map((d) => escapeHtml(d.word)).join(", ")}`
+      `📝 <b>Derived:</b> ${view.derivedWords.map((d) => escapeHtml(d.word)).join(", ")}`
     );
   }
 
@@ -93,9 +107,22 @@ export const handleTelegramWebhook = httpAction(async (_, request) => {
         return;
       }
 
-      const first = results[0];
-      const message = formatSearchResult(first);
-      const origin = first.origin;
+      const { exact, suggestions } = findExactMatch(results, word);
+
+      if (!exact) {
+        const keyboard = new InlineKeyboard();
+        for (const s of suggestions) {
+          keyboard.text(s.word, `s:${s.word}`).row();
+        }
+        await ctx.reply(
+          `No exact match for <b>${escapeHtml(word)}</b>.\nDid you mean:`,
+          { parse_mode: "HTML", reply_markup: keyboard }
+        );
+        return;
+      }
+
+      const message = formatSearchResult(exact);
+      const origin = exact.origin;
 
       if (origin && origin.length > 0) {
         const chars = [...origin];
@@ -127,20 +154,40 @@ export const handleTelegramWebhook = httpAction(async (_, request) => {
         const char = data.slice(2);
         const detail = await formatDetailedView(apiKey, char);
         await ctx.reply(detail, { parse_mode: "HTML" });
+      } else if (data.startsWith("s:")) {
+        const word = data.slice(2);
+        const results = await searchWord(apiKey, word);
+        const { exact } = findExactMatch(results, word);
+        if (!exact) {
+          await ctx.reply(
+            `No results for <b>${escapeHtml(word)}</b>.`,
+            { parse_mode: "HTML" }
+          );
+        } else {
+          const message = formatSearchResult(exact);
+          const origin = exact.origin;
+          if (origin && origin.length > 0) {
+            const chars = [...origin];
+            const keyboard = new InlineKeyboard();
+            for (const char of chars) {
+              keyboard.text(char, `h:${char}`);
+            }
+            keyboard.row().text("All", `ha:${origin}`);
+            await ctx.reply(message, {
+              parse_mode: "HTML",
+              reply_markup: keyboard,
+            });
+          } else {
+            await ctx.reply(message, { parse_mode: "HTML" });
+          }
+        }
       } else if (data.startsWith("ha:")) {
         const chars = [...data.slice(3)];
         const details = await Promise.all(
           chars.map((char) => formatDetailedView(apiKey, char))
         );
-        const combined = details.join("\n\n───────────\n\n");
-
-        // Split if too long for Telegram (4096 char limit)
-        if (combined.length <= 4096) {
-          await ctx.reply(combined, { parse_mode: "HTML" });
-        } else {
-          for (const detail of details) {
-            await ctx.reply(detail, { parse_mode: "HTML" });
-          }
+        for (const detail of details) {
+          await ctx.reply(detail, { parse_mode: "HTML" });
         }
       }
     } catch (err) {
