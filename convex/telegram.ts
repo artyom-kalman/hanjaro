@@ -1,5 +1,6 @@
 import { Bot, InlineKeyboard, webhookCallback } from "grammy";
 import { httpAction } from "./_generated/server.js";
+import { internal } from "./_generated/api.js";
 import {
   searchWord,
   viewEntry,
@@ -22,22 +23,73 @@ function escapeHtml(text: string): string {
     .replace(/>/g, "&gt;");
 }
 
-function formatSearchResult(r: {
-  word: string;
-  origin: string;
-  pos: string;
+const posMap: Record<string, string> = {
+  "명사": "Noun",
+  "동사": "Verb",
+  "형용사": "Adjective",
+  "부사": "Adverb",
+  "감탄사": "Interjection",
+  "대명사": "Pronoun",
+  "수사": "Numeral",
+  "관형사": "Determiner",
+  "조사": "Particle",
+  "접사": "Affix",
+  "의존 명사": "Dependent Noun",
+  "보조 동사": "Auxiliary Verb",
+  "보조 형용사": "Auxiliary Adjective",
+};
+
+type HanjaDoc = {
+  character: string;
   definition: string;
-  transWord: string;
-  transDfn: string;
-}): string {
+  hangul?: string;
+  korean?: string;
+  mandarin?: string;
+} | null;
+
+function formatCharBreakdown(hanjaChars: HanjaDoc[]): string | null {
+  const parts = hanjaChars
+    .filter((doc): doc is NonNullable<HanjaDoc> => doc !== null)
+    .map((doc) => {
+      const segments = [doc.character];
+      if (doc.hangul) segments.push(doc.hangul);
+      if (doc.mandarin) segments.push(doc.mandarin);
+      segments.push(doc.definition);
+      return segments.join(" ");
+    });
+  if (parts.length === 0) return null;
+  return `   ${parts.join(" · ")}`;
+}
+
+function formatSearchResult(
+  r: {
+    word: string;
+    origin: string;
+    pos: string;
+    definition: string;
+    transWord: string;
+    transDfn: string;
+  },
+  hanjaChars?: HanjaDoc[]
+): string {
   const lines: string[] = [];
   const originPart = r.origin ? ` [${escapeHtml(r.origin)}]` : "";
   lines.push(`📖 <b>${escapeHtml(r.word)}</b>${originPart}`);
-  if (r.pos) lines.push(`<i>${escapeHtml(r.pos)}</i>`);
-  lines.push("");
+  if (hanjaChars) {
+    const breakdown = formatCharBreakdown(hanjaChars);
+    if (breakdown) lines.push(breakdown);
+  }
+  if (r.pos) {
+    const eng = posMap[r.pos];
+    const posText = eng ? `${escapeHtml(r.pos)} (${eng})` : escapeHtml(r.pos);
+    lines.push(`<i>${posText}</i>`);
+  }
+  if (r.transWord) {
+    lines.push("");
+    lines.push(`🇬🇧 ${escapeHtml(r.transWord)}`);
+  }
+  if (r.definition || r.transDfn) lines.push("");
   if (r.definition) lines.push(escapeHtml(r.definition));
-  if (r.transWord || r.transDfn) lines.push("");
-  if (r.transWord) lines.push(`🇬🇧 ${escapeHtml(r.transWord)}`);
   if (r.transDfn) lines.push(escapeHtml(r.transDfn));
   return lines.join("\n");
 }
@@ -83,10 +135,17 @@ async function formatDetailedView(
   return lines.join("\n");
 }
 
-export const handleTelegramWebhook = httpAction(async (_, request) => {
+export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
   const token = process.env.TELEGRAM_BOT_TOKEN!;
   const apiKey = process.env.KRDICT_API_KEY!;
   const bot = new Bot(token);
+
+  async function lookupHanja(origin: string): Promise<HanjaDoc[]> {
+    if (!origin) return [];
+    return actionCtx.runQuery(internal.hanja.getByCharacters, {
+      characters: [...origin],
+    });
+  }
 
   // --- Message handler ---
   bot.on("message:text", async (ctx) => {
@@ -121,7 +180,8 @@ export const handleTelegramWebhook = httpAction(async (_, request) => {
         return;
       }
 
-      const message = formatSearchResult(exact);
+      const hanjaChars = await lookupHanja(exact.origin);
+      const message = formatSearchResult(exact, hanjaChars);
       const origin = exact.origin;
 
       if (origin && origin.length > 0) {
@@ -164,7 +224,8 @@ export const handleTelegramWebhook = httpAction(async (_, request) => {
             { parse_mode: "HTML" }
           );
         } else {
-          const message = formatSearchResult(exact);
+          const hanjaChars = await lookupHanja(exact.origin);
+          const message = formatSearchResult(exact, hanjaChars);
           const origin = exact.origin;
           if (origin && origin.length > 0) {
             const chars = [...origin];

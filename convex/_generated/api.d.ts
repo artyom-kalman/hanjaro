@@ -8,6 +8,7 @@
  * @module
  */
 
+import type * as hanja from "../hanja.js";
 import type * as http from "../http.js";
 import type * as krdict from "../krdict.js";
 import type * as registerWebhook from "../registerWebhook.js";
@@ -20,6 +21,7 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  hanja: typeof hanja;
   http: typeof http;
   krdict: typeof krdict;
   registerWebhook: typeof registerWebhook;
