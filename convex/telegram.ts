@@ -57,31 +57,62 @@ function formatSearchResult(
   },
 ): string {
   const lines: string[] = [];
-  const originPart = r.origin ? ` [${escapeHtml(r.origin)}]` : "";
-  lines.push(`📖 <b>${escapeHtml(r.word)}</b>${originPart}`);
+  const originPart = r.origin
+    ? `  ·  <code>${escapeHtml(r.origin)}</code>`
+    : "";
+  lines.push(`📖  <b>${escapeHtml(r.word)}</b>${originPart}`);
   if (r.pos) {
     const eng = posMap[r.pos];
     const posText = eng ? `${escapeHtml(r.pos)} (${eng})` : escapeHtml(r.pos);
     lines.push(`<i>${posText}</i>`);
   }
+
   if (r.transWord) {
     lines.push("");
     lines.push(`🇬🇧 ${escapeHtml(r.transWord)}`);
   }
   if (r.definition || r.transDfn) lines.push("");
-  if (r.definition) lines.push(escapeHtml(r.definition));
-  if (r.transDfn) lines.push(escapeHtml(r.transDfn));
+  if (r.definition) lines.push(`<i>${escapeHtml(r.definition)}</i>`);
+  if (r.transDfn) lines.push(`<i>${escapeHtml(r.transDfn)}</i>`);
+
   return lines.join("\n");
 }
 
 function formatCharDetailView(doc: HanjaDoc, char: string): string {
-  if (!doc) return `<b>${escapeHtml(char)}</b> — no hanja data available`;
+  if (!doc) return `<b>${escapeHtml(char)}</b> — <i>no hanja data</i>`;
 
   const lines: string[] = [];
-  lines.push(`<b>${escapeHtml(doc.character)}</b>`);
+  lines.push(`<b>${escapeHtml(doc.character)}</b>  ·  <i>${escapeHtml(doc.definition)}</i>`);
   if (doc.hangul) lines.push(`🇰🇷 ${escapeHtml(doc.hangul)}`);
   if (doc.mandarin) lines.push(`🇨🇳 ${escapeHtml(doc.mandarin)}`);
-  lines.push(`📖 ${escapeHtml(doc.definition)}`);
+  return lines.join("\n");
+}
+
+function formatAllCharactersView(
+  origin: string,
+  docs: HanjaDoc[],
+  chars: string[],
+): string {
+  const lines: string[] = [];
+  lines.push(`<b>${escapeHtml(origin)}</b>  ·  Hanja Breakdown`);
+
+  for (let i = 0; i < chars.length; i++) {
+    const doc = docs[i];
+    const char = chars[i];
+    lines.push("");
+
+    if (!doc) {
+      lines.push(`<b>${escapeHtml(char)}</b> — <i>no data</i>`);
+      continue;
+    }
+
+    lines.push(`<b>${escapeHtml(doc.character)}</b>  ·  <i>${escapeHtml(doc.definition)}</i>`);
+    const readings: string[] = [];
+    if (doc.hangul) readings.push(`🇰🇷 ${escapeHtml(doc.hangul)}`);
+    if (doc.mandarin) readings.push(`🇨🇳 ${escapeHtml(doc.mandarin)}`);
+    if (readings.length > 0) lines.push(readings.join("  "));
+  }
+
   return lines.join("\n");
 }
 
@@ -139,7 +170,9 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
         for (const char of chars) {
           keyboard.text(char, `h:${char}`);
         }
-        keyboard.row().text("All", `ha:${origin}`);
+        if (chars.length > 1) {
+          keyboard.row().text("All", `ha:${origin}`);
+        }
 
         await ctx.reply(message, {
           parse_mode: "HTML",
@@ -182,7 +215,9 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
             for (const char of chars) {
               keyboard.text(char, `h:${char}`);
             }
-            keyboard.row().text("All", `ha:${origin}`);
+            if (chars.length > 1) {
+              keyboard.row().text("All", `ha:${origin}`);
+            }
             await ctx.reply(message, {
               parse_mode: "HTML",
               reply_markup: keyboard,
@@ -192,12 +227,11 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
           }
         }
       } else if (data.startsWith("ha:")) {
-        const chars = [...data.slice(3)];
-        const docs = await lookupHanja(chars.join(""));
-        for (let i = 0; i < chars.length; i++) {
-          const detail = formatCharDetailView(docs[i], chars[i]);
-          await ctx.reply(detail, { parse_mode: "HTML" });
-        }
+        const origin = data.slice(3);
+        const chars = [...origin];
+        const docs = await lookupHanja(origin);
+        const message = formatAllCharactersView(origin, docs, chars);
+        await ctx.reply(message, { parse_mode: "HTML" });
       }
     } catch (err) {
       console.error("Callback error:", err);
