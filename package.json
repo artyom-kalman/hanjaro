@@ -3,6 +3,12 @@
   "module": "index.ts",
   "type": "module",
   "private": true,
+  "scripts": {
+    "dev": "bunx convex dev",
+    "deploy": "bunx convex deploy --prod",
+    "register:dev": "bunx convex run registerWebhook:register",
+    "register:prod": "bunx convex run --prod registerWebhook:register"
+  },
   "devDependencies": {
     "@types/bun": "latest"
   },
