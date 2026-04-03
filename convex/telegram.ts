@@ -3,7 +3,6 @@ import { httpAction } from "./_generated/server.js";
 import { internal } from "./_generated/api.js";
 import {
   searchWord,
-  viewEntry,
   type KrdictSearchResult,
 } from "./krdict.js";
 
@@ -47,20 +46,6 @@ type HanjaDoc = {
   mandarin?: string;
 } | null;
 
-function formatCharBreakdown(hanjaChars: HanjaDoc[]): string | null {
-  const parts = hanjaChars
-    .filter((doc): doc is NonNullable<HanjaDoc> => doc !== null)
-    .map((doc) => {
-      const segments = [doc.character];
-      if (doc.hangul) segments.push(doc.hangul);
-      if (doc.mandarin) segments.push(doc.mandarin);
-      segments.push(doc.definition);
-      return segments.join(" ");
-    });
-  if (parts.length === 0) return null;
-  return `   ${parts.join(" · ")}`;
-}
-
 function formatSearchResult(
   r: {
     word: string;
@@ -70,15 +55,10 @@ function formatSearchResult(
     transWord: string;
     transDfn: string;
   },
-  hanjaChars?: HanjaDoc[]
 ): string {
   const lines: string[] = [];
   const originPart = r.origin ? ` [${escapeHtml(r.origin)}]` : "";
   lines.push(`📖 <b>${escapeHtml(r.word)}</b>${originPart}`);
-  if (hanjaChars) {
-    const breakdown = formatCharBreakdown(hanjaChars);
-    if (breakdown) lines.push(breakdown);
-  }
   if (r.pos) {
     const eng = posMap[r.pos];
     const posText = eng ? `${escapeHtml(r.pos)} (${eng})` : escapeHtml(r.pos);
@@ -94,44 +74,14 @@ function formatSearchResult(
   return lines.join("\n");
 }
 
-async function formatDetailedView(
-  apiKey: string,
-  char: string
-): Promise<string> {
-  const results = await searchWord(apiKey, char);
-  if (results.length === 0) return `<b>${escapeHtml(char)}</b> — no results`;
-
-  const first = results[0];
-  const view = await viewEntry(apiKey, first.targetCode);
-  if (!view) return `<b>${escapeHtml(char)}</b> — no detailed info`;
+function formatCharDetailView(doc: HanjaDoc, char: string): string {
+  if (!doc) return `<b>${escapeHtml(char)}</b> — no hanja data available`;
 
   const lines: string[] = [];
-  const wordLabel = view.word ?? char;
-  const originPart = view.origin ? ` (${escapeHtml(view.origin)})` : "";
-  lines.push(`📖 <b>${escapeHtml(wordLabel)}</b>${originPart}`);
-
-  if (view.pronunciation)
-    lines.push(`🔊 ${escapeHtml(view.pronunciation)}`);
-  if (view.grade) lines.push(`📊 ${escapeHtml(view.grade)}`);
-  lines.push("");
-
-  for (let i = 0; i < view.senses.length; i++) {
-    const s = view.senses[i];
-    lines.push(`<b>${i + 1}.</b> ${escapeHtml(s.definition)}`);
-    if (s.transWord) lines.push(`   🇬🇧 ${escapeHtml(s.transWord)}`);
-    if (s.transDfn) lines.push(`   ${escapeHtml(s.transDfn)}`);
-    for (const rel of s.relatedWords) {
-      lines.push(`   🔗 ${escapeHtml(rel.word)} (${escapeHtml(rel.type)})`);
-    }
-  }
-
-  if (view.derivedWords.length > 0) {
-    lines.push("");
-    lines.push(
-      `📝 <b>Derived:</b> ${view.derivedWords.map((d) => escapeHtml(d.word)).join(", ")}`
-    );
-  }
-
+  lines.push(`<b>${escapeHtml(doc.character)}</b>`);
+  if (doc.hangul) lines.push(`🇰🇷 ${escapeHtml(doc.hangul)}`);
+  if (doc.mandarin) lines.push(`🇨🇳 ${escapeHtml(doc.mandarin)}`);
+  lines.push(`📖 ${escapeHtml(doc.definition)}`);
   return lines.join("\n");
 }
 
@@ -180,8 +130,7 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
         return;
       }
 
-      const hanjaChars = await lookupHanja(exact.origin);
-      const message = formatSearchResult(exact, hanjaChars);
+      const message = formatSearchResult(exact);
       const origin = exact.origin;
 
       if (origin && origin.length > 0) {
@@ -212,7 +161,8 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
     try {
       if (data.startsWith("h:")) {
         const char = data.slice(2);
-        const detail = await formatDetailedView(apiKey, char);
+        const [doc] = await lookupHanja(char);
+        const detail = formatCharDetailView(doc, char);
         await ctx.reply(detail, { parse_mode: "HTML" });
       } else if (data.startsWith("s:")) {
         const word = data.slice(2);
@@ -224,8 +174,7 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
             { parse_mode: "HTML" }
           );
         } else {
-          const hanjaChars = await lookupHanja(exact.origin);
-          const message = formatSearchResult(exact, hanjaChars);
+          const message = formatSearchResult(exact);
           const origin = exact.origin;
           if (origin && origin.length > 0) {
             const chars = [...origin];
@@ -244,10 +193,9 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
         }
       } else if (data.startsWith("ha:")) {
         const chars = [...data.slice(3)];
-        const details = await Promise.all(
-          chars.map((char) => formatDetailedView(apiKey, char))
-        );
-        for (const detail of details) {
+        const docs = await lookupHanja(chars.join(""));
+        for (let i = 0; i < chars.length; i++) {
+          const detail = formatCharDetailView(docs[i], chars[i]);
           await ctx.reply(detail, { parse_mode: "HTML" });
         }
       }

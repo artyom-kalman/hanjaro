@@ -22,24 +22,6 @@ export interface KrdictSearchResult {
   transDfn: string;
 }
 
-export interface KrdictSense {
-  definition: string;
-  transWord: string;
-  transDfn: string;
-  relatedWords: { word: string; type: string }[];
-}
-
-export interface KrdictViewResult {
-  word: string;
-  origin: string;
-  originType: string;
-  pronunciation: string;
-  wordType: string;
-  grade: string;
-  senses: KrdictSense[];
-  derivedWords: { word: string; targetCode: number }[];
-}
-
 // --- Fetch with retry ---
 
 async function fetchWithRetry(url: string, retries = 5): Promise<Response> {
@@ -101,62 +83,3 @@ export async function searchWord(
   });
 }
 
-// --- View ---
-
-export async function viewEntry(
-  apiKey: string,
-  targetCode: number
-): Promise<KrdictViewResult | null> {
-  const params = new URLSearchParams({
-    key: apiKey,
-    method: "target_code",
-    q: String(targetCode),
-    translated: "y",
-    trans_lang: "1",
-  });
-
-  const res = await fetchWithRetry(
-    `https://krdict.korean.go.kr/api/view?${params}`
-  );
-  if (!res.ok) {
-    throw new Error(`krdict view failed: ${res.status} ${res.statusText}`);
-  }
-
-  const xml = await res.text();
-  const data = parser.parse(xml);
-  const wordInfo = data?.channel?.item?.word_info;
-
-  if (!wordInfo) return null;
-
-  const senses = asArray(wordInfo.sense_info).map((sense: any) => {
-    const trans = sense.translation;
-    return {
-      definition: sense.definition ?? "",
-      transWord: trans?.trans_word ?? "",
-      transDfn: trans?.trans_dfn ?? "",
-      relatedWords: asArray(sense.rel_info).map((rel: any) => ({
-        word: rel.word ?? "",
-        type: rel.type ?? "",
-      })),
-    };
-  });
-
-  const derivedWords = asArray(wordInfo.der_info).map((der: any) => ({
-    word: der.word ?? "",
-    targetCode: der.link_target_code,
-  }));
-
-  return {
-    word: wordInfo.word ?? "",
-    origin:
-      wordInfo.original_language_info?.original_language ?? "",
-    originType:
-      wordInfo.original_language_info?.language_type ?? "",
-    pronunciation:
-      wordInfo.pronunciation_info?.pronunciation ?? "",
-    wordType: wordInfo.word_type ?? "",
-    grade: wordInfo.word_grade ?? "",
-    senses,
-    derivedWords,
-  };
-}
