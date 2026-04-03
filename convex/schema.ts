@@ -9,4 +9,14 @@ export default defineSchema({
     korean: v.optional(v.string()),
     mandarin: v.optional(v.string()),
   }).index("by_character", ["character"]),
+
+  words: defineTable({
+    word: v.string(),
+    origin: v.string(),
+    targetCode: v.number(),
+    pos: v.string(),
+    definition: v.string(),
+    transWord: v.string(),
+    transDfn: v.string(),
+  }).index("by_word", ["word"]),
 });

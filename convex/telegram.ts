@@ -128,6 +128,17 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
     });
   }
 
+  async function searchWithCache(word: string): Promise<KrdictSearchResult[]> {
+    const cached = await actionCtx.runQuery(internal.words.getByWord, { word });
+    if (cached) return [cached];
+    const results = await searchWord(apiKey, word);
+    const { exact } = findExactMatch(results, word);
+    if (exact) {
+      await actionCtx.runMutation(internal.words.save, exact);
+    }
+    return results;
+  }
+
   // --- Message handler ---
   bot.on("message:text", async (ctx) => {
     const text = ctx.message.text;
@@ -139,7 +150,7 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
 
     const word = match[0];
     try {
-      const results = await searchWord(apiKey, word);
+      const results = await searchWithCache(word);
       if (results.length === 0) {
         await ctx.reply(`No results found for <b>${escapeHtml(word)}</b>.`, {
           parse_mode: "HTML",
@@ -199,7 +210,7 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
         await ctx.reply(detail, { parse_mode: "HTML" });
       } else if (data.startsWith("s:")) {
         const word = data.slice(2);
-        const results = await searchWord(apiKey, word);
+        const results = await searchWithCache(word);
         const { exact } = findExactMatch(results, word);
         if (!exact) {
           await ctx.reply(
