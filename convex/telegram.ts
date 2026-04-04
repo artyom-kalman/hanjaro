@@ -26,6 +26,21 @@ function escapeHtml(text: string): string {
     .replace(/>/g, "&gt;");
 }
 
+const LOADING_FRAMES = ["Looking up.", "Looking up..", "Looking up...", "Looking up.."];
+
+function startSpinner(api: Bot["api"], chatId: number, messageId: number): { stop: () => void } {
+  let i = 0;
+  const spinInterval = setInterval(() => {
+    i = (i + 1) % LOADING_FRAMES.length;
+    api.editMessageText(chatId, messageId, LOADING_FRAMES[i]).catch(() => {});
+  }, 700);
+  api.sendChatAction(chatId, "typing").catch(() => {});
+  const typingInterval = setInterval(() => {
+    api.sendChatAction(chatId, "typing").catch(() => {});
+  }, 3000);
+  return { stop: () => { clearInterval(spinInterval); clearInterval(typingInterval); } };
+}
+
 const posMap: Record<string, string> = {
   "명사": "Noun",
   "동사": "Verb",
@@ -132,9 +147,11 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
     });
   }
 
-  async function searchWithCache(word: string): Promise<KrdictSearchResult[]> {
-    const cached = await actionCtx.runQuery(internal.words.getByWord, { word });
-    if (cached) return [cached];
+  async function getCached(word: string): Promise<KrdictSearchResult | null> {
+    return actionCtx.runQuery(internal.words.getByWord, { word });
+  }
+
+  async function searchFromApi(word: string): Promise<KrdictSearchResult[]> {
     const results = await searchWord(apiKey, word);
     const { exact } = findExactMatch(results, word);
     if (exact) {
@@ -154,11 +171,29 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
 
     const word = match[0];
     try {
-      const results = await searchWithCache(word);
+      const cached = await getCached(word);
+      let results: KrdictSearchResult[];
+      let loadingMsg: { chat: { id: number }; message_id: number } | null = null;
+
+      if (cached) {
+        results = [cached];
+      } else {
+        loadingMsg = await ctx.reply(`${LOADING_FRAMES[0]}`);
+        const spinner = startSpinner(ctx.api, loadingMsg.chat.id, loadingMsg.message_id);
+        try {
+          results = await searchFromApi(word);
+        } finally {
+          spinner.stop();
+        }
+      }
+
       if (results.length === 0) {
-        await ctx.reply(`No results found for <b>${escapeHtml(word)}</b>.`, {
-          parse_mode: "HTML",
-        });
+        const text = `No results found for <b>${escapeHtml(word)}</b>.`;
+        if (loadingMsg) {
+          await ctx.api.editMessageText(loadingMsg.chat.id, loadingMsg.message_id, text, { parse_mode: "HTML" });
+        } else {
+          await ctx.reply(text, { parse_mode: "HTML" });
+        }
         return;
       }
 
@@ -169,10 +204,12 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
         for (const s of suggestions) {
           keyboard.text(s.word, `s:${s.word}`).row();
         }
-        await ctx.reply(
-          `No exact match for <b>${escapeHtml(word)}</b>.\nDid you mean:`,
-          { parse_mode: "HTML", reply_markup: keyboard }
-        );
+        const text = `No exact match for <b>${escapeHtml(word)}</b>.\nDid you mean:`;
+        if (loadingMsg) {
+          await ctx.api.editMessageText(loadingMsg.chat.id, loadingMsg.message_id, text, { parse_mode: "HTML", reply_markup: keyboard });
+        } else {
+          await ctx.reply(text, { parse_mode: "HTML", reply_markup: keyboard });
+        }
         return;
       }
 
@@ -189,12 +226,17 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
           keyboard.row().text("All", `ha:${origin}`);
         }
 
-        await ctx.reply(message, {
-          parse_mode: "HTML",
-          reply_markup: keyboard,
-        });
+        if (loadingMsg) {
+          await ctx.api.editMessageText(loadingMsg.chat.id, loadingMsg.message_id, message, { parse_mode: "HTML", reply_markup: keyboard });
+        } else {
+          await ctx.reply(message, { parse_mode: "HTML", reply_markup: keyboard });
+        }
       } else {
-        await ctx.reply(message, { parse_mode: "HTML" });
+        if (loadingMsg) {
+          await ctx.api.editMessageText(loadingMsg.chat.id, loadingMsg.message_id, message, { parse_mode: "HTML" });
+        } else {
+          await ctx.reply(message, { parse_mode: "HTML" });
+        }
       }
     } catch (err) {
       console.error("Search error:", err);
@@ -213,13 +255,31 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
         await ctx.reply(detail, { parse_mode: "HTML" });
       } else if (data.startsWith("s:")) {
         const word = data.slice(2);
-        const results = await searchWithCache(word);
+        const cached = await getCached(word);
+        let results: KrdictSearchResult[];
+        let loadingMsg: { chat: { id: number }; message_id: number } | null = null;
+
+        if (cached) {
+          results = [cached];
+        } else {
+          await ctx.replyWithChatAction("typing");
+          loadingMsg = await ctx.reply(`${LOADING_FRAMES[0]}`);
+          const spinner = startSpinner(ctx.api, loadingMsg.chat.id, loadingMsg.message_id);
+          try {
+            results = await searchFromApi(word);
+          } finally {
+            spinner.stop();
+          }
+        }
+
         const { exact } = findExactMatch(results, word);
         if (!exact) {
-          await ctx.reply(
-            `No results for <b>${escapeHtml(word)}</b>.`,
-            { parse_mode: "HTML" }
-          );
+          const text = `No results for <b>${escapeHtml(word)}</b>.`;
+          if (loadingMsg) {
+            await ctx.api.editMessageText(loadingMsg.chat.id, loadingMsg.message_id, text, { parse_mode: "HTML" });
+          } else {
+            await ctx.reply(text, { parse_mode: "HTML" });
+          }
         } else {
           const message = formatSearchResult(exact);
           const origin = exact.origin;
@@ -232,12 +292,17 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
             if (chars.length > 1) {
               keyboard.row().text("All", `ha:${origin}`);
             }
-            await ctx.reply(message, {
-              parse_mode: "HTML",
-              reply_markup: keyboard,
-            });
+            if (loadingMsg) {
+              await ctx.api.editMessageText(loadingMsg.chat.id, loadingMsg.message_id, message, { parse_mode: "HTML", reply_markup: keyboard });
+            } else {
+              await ctx.reply(message, { parse_mode: "HTML", reply_markup: keyboard });
+            }
           } else {
-            await ctx.reply(message, { parse_mode: "HTML" });
+            if (loadingMsg) {
+              await ctx.api.editMessageText(loadingMsg.chat.id, loadingMsg.message_id, message, { parse_mode: "HTML" });
+            } else {
+              await ctx.reply(message, { parse_mode: "HTML" });
+            }
           }
         }
       } else if (data.startsWith("ha:")) {
