@@ -15,6 +15,10 @@ function findExactMatch(
   return { exact, suggestions };
 }
 
+function hanjaOnly(origin: string): string[] {
+  return [...origin].filter(c => c >= '\u4E00' && c <= '\u9FFF');
+}
+
 function escapeHtml(text: string): string {
   return text
     .replace(/&/g, "&amp;")
@@ -175,8 +179,8 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
       const message = formatSearchResult(exact);
       const origin = exact.origin;
 
-      if (origin && origin.length > 0) {
-        const chars = [...origin];
+      const chars = origin ? hanjaOnly(origin) : [];
+      if (chars.length > 0) {
         const keyboard = new InlineKeyboard();
         for (const char of chars) {
           keyboard.text(char, `h:${char}`);
@@ -198,7 +202,6 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
     }
   });
 
-  // --- Callback query handler ---
   bot.on("callback_query:data", async (ctx) => {
     const data = ctx.callbackQuery.data;
 
@@ -220,8 +223,8 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
         } else {
           const message = formatSearchResult(exact);
           const origin = exact.origin;
-          if (origin && origin.length > 0) {
-            const chars = [...origin];
+          const chars = origin ? hanjaOnly(origin) : [];
+          if (chars.length > 0) {
             const keyboard = new InlineKeyboard();
             for (const char of chars) {
               keyboard.text(char, `h:${char}`);
@@ -239,8 +242,8 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
         }
       } else if (data.startsWith("ha:")) {
         const origin = data.slice(3);
-        const chars = [...origin];
-        const docs = await lookupHanja(origin);
+        const chars = hanjaOnly(origin);
+        const docs = await lookupHanja(chars.join(''));
         const message = formatAllCharactersView(origin, docs, chars);
         await ctx.reply(message, { parse_mode: "HTML" });
       }
