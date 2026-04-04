@@ -15,7 +15,13 @@ export const seedBatch = internalMutation({
   },
   handler: async (ctx, { entries }) => {
     for (const entry of entries) {
-      await ctx.db.insert("hanja", entry);
+      const existing = await ctx.db
+        .query("hanja")
+        .withIndex("by_character", (q) => q.eq("character", entry.character))
+        .first();
+      if (!existing) {
+        await ctx.db.insert("hanja", entry);
+      }
     }
   },
 });
