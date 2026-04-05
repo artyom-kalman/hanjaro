@@ -191,6 +191,12 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
     return message;
   }
 
+  bot.command("start", async (ctx) => {
+    await ctx.reply(
+      "Korean word → definition, English translation, Hanja breakdown.\n\nType any word.",
+    );
+  });
+
   // --- Message handler ---
   bot.on("message:text", async (ctx) => {
     const text = ctx.message.text;
