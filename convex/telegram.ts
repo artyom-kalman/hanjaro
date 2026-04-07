@@ -1,4 +1,4 @@
-import { Bot, InlineKeyboard, webhookCallback } from "grammy";
+import { Bot, InlineKeyboard, webhookCallback, type Context } from "grammy";
 import { httpAction } from "./_generated/server.js";
 import { internal } from "./_generated/api.js";
 import {
@@ -6,12 +6,24 @@ import {
   type KrdictSearchResult,
 } from "./krdict.js";
 
-function findExactMatch(
-  results: KrdictSearchResult[],
+type DisplayResult = {
+  word: string;
+  origin: string;
+  targetCode: number;
+  pos: string;
+  definition: string;
+  transWord: string;
+  transDfn: string;
+};
+
+type LoadingMsg = { chat: { id: number }; message_id: number } | null;
+
+function findExactMatches<T extends { word: string }>(
+  results: T[],
   query: string
-): { exact: KrdictSearchResult | null; suggestions: KrdictSearchResult[] } {
-  const exact = results.find((r) => r.word === query) ?? null;
-  const suggestions = exact ? [] : results.slice(0, 5);
+): { exact: T[]; suggestions: T[] } {
+  const exact = results.filter((r) => r.word === query);
+  const suggestions = exact.length === 0 ? results.slice(0, 5) : [];
   return { exact, suggestions };
 }
 
@@ -28,8 +40,6 @@ function escapeHtml(text: string): string {
 
 const LOADING_FRAMES = ["Looking up.", "Looking up..", "Looking up...", "Looking up.."];
 
-type LoadingMsg = { chat: { id: number }; message_id: number };
-
 function startSpinner(api: Bot["api"], chatId: number, messageId: number): { stop: () => void } {
   let i = 0;
   const spinInterval = setInterval(() => {
@@ -45,7 +55,7 @@ function startSpinner(api: Bot["api"], chatId: number, messageId: number): { sto
 
 async function sendOrEdit(
   ctx: { reply: (text: string, opts?: object) => Promise<unknown>; api: Bot["api"] },
-  loadingMsg: LoadingMsg | null,
+  loadingMsg: LoadingMsg,
   text: string,
   opts?: Record<string, unknown>,
 ): Promise<void> {
@@ -80,16 +90,7 @@ type HanjaDoc = {
   mandarin?: string;
 } | null;
 
-function formatSearchResult(
-  r: {
-    word: string;
-    origin: string;
-    pos: string;
-    definition: string;
-    transWord: string;
-    transDfn: string;
-  },
-): string {
+function formatSearchResult(r: DisplayResult): string {
   const lines: string[] = [];
   const originPart = r.origin
     ? `  ·  <code>${escapeHtml(r.origin)}</code>`
@@ -138,6 +139,18 @@ function formatHanjaBreakdown(
   return lines.join("\n");
 }
 
+function buildMeaningKeyboard(matches: DisplayResult[]): InlineKeyboard {
+  const keyboard = new InlineKeyboard();
+  for (const m of matches) {
+    const origin = m.origin || "—";
+    const meaning = m.transWord || m.definition || "";
+    let label = meaning ? `${origin} · ${meaning}` : origin;
+    if (label.length > 60) label = label.slice(0, 59) + "…";
+    keyboard.text(label, `m:${m.targetCode}`).row();
+  }
+  return keyboard;
+}
+
 export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
   const token = process.env.TELEGRAM_BOT_TOKEN!;
   const apiKey = process.env.KRDICT_API_KEY!;
@@ -150,26 +163,26 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
     });
   }
 
-  async function getCached(word: string): Promise<KrdictSearchResult | null> {
-    return actionCtx.runQuery(internal.words.getByWord, { word });
+  async function getCached(word: string): Promise<DisplayResult[]> {
+    return actionCtx.runQuery(internal.words.getAllByWord, { word });
   }
 
   async function searchFromApi(word: string): Promise<KrdictSearchResult[]> {
     const results = await searchWord(apiKey, word);
-    const { exact } = findExactMatch(results, word);
-    if (exact) {
-      await actionCtx.runMutation(internal.words.save, exact);
+    const { exact } = findExactMatches(results, word);
+    if (exact.length > 0) {
+      await actionCtx.runMutation(internal.words.saveMany, { entries: exact });
     }
     return results;
   }
 
   async function resolveWord(
     word: string,
-    sendLoading: () => Promise<LoadingMsg>,
+    sendLoading: () => Promise<NonNullable<LoadingMsg>>,
     api: Bot["api"],
-  ): Promise<{ results: KrdictSearchResult[]; loadingMsg: LoadingMsg | null }> {
+  ): Promise<{ results: DisplayResult[]; loadingMsg: LoadingMsg }> {
     const cached = await getCached(word);
-    if (cached) return { results: [cached], loadingMsg: null };
+    if (cached.length > 0) return { results: cached, loadingMsg: null };
 
     const loadingMsg = await sendLoading();
     const spinner = startSpinner(api, loadingMsg.chat.id, loadingMsg.message_id);
@@ -181,14 +194,48 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
     }
   }
 
-  async function formatResultWithHanja(exact: KrdictSearchResult): Promise<string> {
-    let message = formatSearchResult(exact);
-    const chars = exact.origin ? hanjaOnly(exact.origin) : [];
+  async function formatResultWithHanja(result: DisplayResult): Promise<string> {
+    let message = formatSearchResult(result);
+    const chars = result.origin ? hanjaOnly(result.origin) : [];
     if (chars.length > 0) {
       const docs = await lookupHanja(chars.join(''));
       message += "\n" + formatHanjaBreakdown(docs, chars);
     }
     return message;
+  }
+
+  async function handleWordLookup(
+    ctx: Context,
+    word: string,
+    sendLoading: () => Promise<NonNullable<LoadingMsg>>,
+  ): Promise<void> {
+    const { results, loadingMsg } = await resolveWord(word, sendLoading, ctx.api);
+
+    if (results.length === 0) {
+      await sendOrEdit(ctx, loadingMsg, `No results found for <b>${escapeHtml(word)}</b>.`, { parse_mode: "HTML" });
+      return;
+    }
+
+    const { exact, suggestions } = findExactMatches(results, word);
+
+    if (exact.length === 0) {
+      const keyboard = new InlineKeyboard();
+      for (const s of suggestions) keyboard.text(s.word, `s:${s.word}`).row();
+      await sendOrEdit(ctx, loadingMsg, `No exact match for <b>${escapeHtml(word)}</b>.\nDid you mean:`, { parse_mode: "HTML", reply_markup: keyboard });
+      return;
+    }
+
+    if (exact.length === 1) {
+      const message = await formatResultWithHanja(exact[0]!);
+      await sendOrEdit(ctx, loadingMsg, message, { parse_mode: "HTML" });
+      return;
+    }
+
+    const text = `Multiple meanings for <b>${escapeHtml(word)}</b>:`;
+    await sendOrEdit(ctx, loadingMsg, text, {
+      parse_mode: "HTML",
+      reply_markup: buildMeaningKeyboard(exact),
+    });
   }
 
   bot.command("start", async (ctx) => {
@@ -208,28 +255,7 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
 
     const word = match[0];
     try {
-      const { results, loadingMsg } = await resolveWord(
-        word,
-        () => ctx.reply(LOADING_FRAMES[0]),
-        ctx.api,
-      );
-
-      if (results.length === 0) {
-        await sendOrEdit(ctx, loadingMsg, `No results found for <b>${escapeHtml(word)}</b>.`, { parse_mode: "HTML" });
-        return;
-      }
-
-      const { exact, suggestions } = findExactMatch(results, word);
-
-      if (!exact) {
-        const keyboard = new InlineKeyboard();
-        for (const s of suggestions) keyboard.text(s.word, `s:${s.word}`).row();
-        await sendOrEdit(ctx, loadingMsg, `No exact match for <b>${escapeHtml(word)}</b>.\nDid you mean:`, { parse_mode: "HTML", reply_markup: keyboard });
-        return;
-      }
-
-      const message = await formatResultWithHanja(exact);
-      await sendOrEdit(ctx, loadingMsg, message, { parse_mode: "HTML" });
+      await handleWordLookup(ctx, word, () => ctx.reply(LOADING_FRAMES[0]));
     } catch (err) {
       console.error("Search error:", err);
       await ctx.reply("Sorry, dictionary lookup failed. Please try again.");
@@ -242,21 +268,18 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
     try {
       if (data.startsWith("s:")) {
         const word = data.slice(2);
-        const { results, loadingMsg } = await resolveWord(
-          word,
-          async () => {
-            await ctx.replyWithChatAction("typing");
-            return ctx.reply(LOADING_FRAMES[0]);
-          },
-          ctx.api,
-        );
-
-        const { exact } = findExactMatch(results, word);
-        if (!exact) {
-          await sendOrEdit(ctx, loadingMsg, `No results for <b>${escapeHtml(word)}</b>.`, { parse_mode: "HTML" });
+        await handleWordLookup(ctx, word, async () => {
+          await ctx.replyWithChatAction("typing");
+          return ctx.reply(LOADING_FRAMES[0]);
+        });
+      } else if (data.startsWith("m:")) {
+        const tc = Number(data.slice(2));
+        const doc = await actionCtx.runQuery(internal.words.getByTargetCode, { targetCode: tc });
+        if (!doc) {
+          await ctx.reply("Meaning no longer cached, please search again.");
         } else {
-          const message = await formatResultWithHanja(exact);
-          await sendOrEdit(ctx, loadingMsg, message, { parse_mode: "HTML" });
+          const message = await formatResultWithHanja(doc);
+          await ctx.reply(message, { parse_mode: "HTML" });
         }
       }
     } catch (err) {
