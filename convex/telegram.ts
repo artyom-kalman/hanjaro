@@ -28,6 +28,8 @@ function escapeHtml(text: string): string {
 
 const LOADING_FRAMES = ["Looking up.", "Looking up..", "Looking up...", "Looking up.."];
 
+type LoadingMsg = { chat: { id: number }; message_id: number };
+
 function startSpinner(api: Bot["api"], chatId: number, messageId: number): { stop: () => void } {
   let i = 0;
   const spinInterval = setInterval(() => {
@@ -39,6 +41,19 @@ function startSpinner(api: Bot["api"], chatId: number, messageId: number): { sto
     api.sendChatAction(chatId, "typing").catch(() => {});
   }, 3000);
   return { stop: () => { clearInterval(spinInterval); clearInterval(typingInterval); } };
+}
+
+async function sendOrEdit(
+  ctx: { reply: (text: string, opts?: object) => Promise<unknown>; api: Bot["api"] },
+  loadingMsg: LoadingMsg | null,
+  text: string,
+  opts?: Record<string, unknown>,
+): Promise<void> {
+  if (loadingMsg) {
+    await ctx.api.editMessageText(loadingMsg.chat.id, loadingMsg.message_id, text, opts);
+  } else {
+    await ctx.reply(text, opts);
+  }
 }
 
 const posMap: Record<string, string> = {
@@ -97,23 +112,11 @@ function formatSearchResult(
   return lines.join("\n");
 }
 
-function formatCharDetailView(doc: HanjaDoc, char: string): string {
-  if (!doc) return `<b>${escapeHtml(char)}</b> — <i>no hanja data</i>`;
-
-  const lines: string[] = [];
-  lines.push(`<b>${escapeHtml(doc.character)}</b>  ·  <i>${escapeHtml(doc.definition)}</i>`);
-  if (doc.hangul) lines.push(`🇰🇷 ${escapeHtml(doc.hangul)}`);
-  if (doc.mandarin) lines.push(`🇨🇳 ${escapeHtml(doc.mandarin)}`);
-  return lines.join("\n");
-}
-
-function formatAllCharactersView(
-  origin: string,
+function formatHanjaBreakdown(
   docs: HanjaDoc[],
   chars: string[],
 ): string {
   const lines: string[] = [];
-  lines.push(`<b>${escapeHtml(origin)}</b>  ·  Hanja Breakdown`);
 
   for (let i = 0; i < chars.length; i++) {
     const doc = docs[i];
@@ -160,6 +163,40 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
     return results;
   }
 
+  async function resolveWord(
+    word: string,
+    sendLoading: () => Promise<LoadingMsg>,
+    api: Bot["api"],
+  ): Promise<{ results: KrdictSearchResult[]; loadingMsg: LoadingMsg | null }> {
+    const cached = await getCached(word);
+    if (cached) return { results: [cached], loadingMsg: null };
+
+    const loadingMsg = await sendLoading();
+    const spinner = startSpinner(api, loadingMsg.chat.id, loadingMsg.message_id);
+    try {
+      const results = await searchFromApi(word);
+      return { results, loadingMsg };
+    } finally {
+      spinner.stop();
+    }
+  }
+
+  async function formatResultWithHanja(exact: KrdictSearchResult): Promise<string> {
+    let message = formatSearchResult(exact);
+    const chars = exact.origin ? hanjaOnly(exact.origin) : [];
+    if (chars.length > 0) {
+      const docs = await lookupHanja(chars.join(''));
+      message += "\n" + formatHanjaBreakdown(docs, chars);
+    }
+    return message;
+  }
+
+  bot.command("start", async (ctx) => {
+    await ctx.reply(
+      "Korean word → definition, English translation, Hanja breakdown.\n\nType any word.",
+    );
+  });
+
   // --- Message handler ---
   bot.on("message:text", async (ctx) => {
     const text = ctx.message.text;
@@ -171,29 +208,14 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
 
     const word = match[0];
     try {
-      const cached = await getCached(word);
-      let results: KrdictSearchResult[];
-      let loadingMsg: { chat: { id: number }; message_id: number } | null = null;
-
-      if (cached) {
-        results = [cached];
-      } else {
-        loadingMsg = await ctx.reply(`${LOADING_FRAMES[0]}`);
-        const spinner = startSpinner(ctx.api, loadingMsg.chat.id, loadingMsg.message_id);
-        try {
-          results = await searchFromApi(word);
-        } finally {
-          spinner.stop();
-        }
-      }
+      const { results, loadingMsg } = await resolveWord(
+        word,
+        () => ctx.reply(LOADING_FRAMES[0]),
+        ctx.api,
+      );
 
       if (results.length === 0) {
-        const text = `No results found for <b>${escapeHtml(word)}</b>.`;
-        if (loadingMsg) {
-          await ctx.api.editMessageText(loadingMsg.chat.id, loadingMsg.message_id, text, { parse_mode: "HTML" });
-        } else {
-          await ctx.reply(text, { parse_mode: "HTML" });
-        }
+        await sendOrEdit(ctx, loadingMsg, `No results found for <b>${escapeHtml(word)}</b>.`, { parse_mode: "HTML" });
         return;
       }
 
@@ -201,43 +223,13 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
 
       if (!exact) {
         const keyboard = new InlineKeyboard();
-        for (const s of suggestions) {
-          keyboard.text(s.word, `s:${s.word}`).row();
-        }
-        const text = `No exact match for <b>${escapeHtml(word)}</b>.\nDid you mean:`;
-        if (loadingMsg) {
-          await ctx.api.editMessageText(loadingMsg.chat.id, loadingMsg.message_id, text, { parse_mode: "HTML", reply_markup: keyboard });
-        } else {
-          await ctx.reply(text, { parse_mode: "HTML", reply_markup: keyboard });
-        }
+        for (const s of suggestions) keyboard.text(s.word, `s:${s.word}`).row();
+        await sendOrEdit(ctx, loadingMsg, `No exact match for <b>${escapeHtml(word)}</b>.\nDid you mean:`, { parse_mode: "HTML", reply_markup: keyboard });
         return;
       }
 
-      const message = formatSearchResult(exact);
-      const origin = exact.origin;
-
-      const chars = origin ? hanjaOnly(origin) : [];
-      if (chars.length > 0) {
-        const keyboard = new InlineKeyboard();
-        for (const char of chars) {
-          keyboard.text(char, `h:${char}`);
-        }
-        if (chars.length > 1) {
-          keyboard.row().text("All", `ha:${origin}`);
-        }
-
-        if (loadingMsg) {
-          await ctx.api.editMessageText(loadingMsg.chat.id, loadingMsg.message_id, message, { parse_mode: "HTML", reply_markup: keyboard });
-        } else {
-          await ctx.reply(message, { parse_mode: "HTML", reply_markup: keyboard });
-        }
-      } else {
-        if (loadingMsg) {
-          await ctx.api.editMessageText(loadingMsg.chat.id, loadingMsg.message_id, message, { parse_mode: "HTML" });
-        } else {
-          await ctx.reply(message, { parse_mode: "HTML" });
-        }
-      }
+      const message = await formatResultWithHanja(exact);
+      await sendOrEdit(ctx, loadingMsg, message, { parse_mode: "HTML" });
     } catch (err) {
       console.error("Search error:", err);
       await ctx.reply("Sorry, dictionary lookup failed. Please try again.");
@@ -248,69 +240,24 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
     const data = ctx.callbackQuery.data;
 
     try {
-      if (data.startsWith("h:")) {
-        const char = data.slice(2);
-        const [doc] = await lookupHanja(char);
-        const detail = formatCharDetailView(doc, char);
-        await ctx.reply(detail, { parse_mode: "HTML" });
-      } else if (data.startsWith("s:")) {
+      if (data.startsWith("s:")) {
         const word = data.slice(2);
-        const cached = await getCached(word);
-        let results: KrdictSearchResult[];
-        let loadingMsg: { chat: { id: number }; message_id: number } | null = null;
-
-        if (cached) {
-          results = [cached];
-        } else {
-          await ctx.replyWithChatAction("typing");
-          loadingMsg = await ctx.reply(`${LOADING_FRAMES[0]}`);
-          const spinner = startSpinner(ctx.api, loadingMsg.chat.id, loadingMsg.message_id);
-          try {
-            results = await searchFromApi(word);
-          } finally {
-            spinner.stop();
-          }
-        }
+        const { results, loadingMsg } = await resolveWord(
+          word,
+          async () => {
+            await ctx.replyWithChatAction("typing");
+            return ctx.reply(LOADING_FRAMES[0]);
+          },
+          ctx.api,
+        );
 
         const { exact } = findExactMatch(results, word);
         if (!exact) {
-          const text = `No results for <b>${escapeHtml(word)}</b>.`;
-          if (loadingMsg) {
-            await ctx.api.editMessageText(loadingMsg.chat.id, loadingMsg.message_id, text, { parse_mode: "HTML" });
-          } else {
-            await ctx.reply(text, { parse_mode: "HTML" });
-          }
+          await sendOrEdit(ctx, loadingMsg, `No results for <b>${escapeHtml(word)}</b>.`, { parse_mode: "HTML" });
         } else {
-          const message = formatSearchResult(exact);
-          const origin = exact.origin;
-          const chars = origin ? hanjaOnly(origin) : [];
-          if (chars.length > 0) {
-            const keyboard = new InlineKeyboard();
-            for (const char of chars) {
-              keyboard.text(char, `h:${char}`);
-            }
-            if (chars.length > 1) {
-              keyboard.row().text("All", `ha:${origin}`);
-            }
-            if (loadingMsg) {
-              await ctx.api.editMessageText(loadingMsg.chat.id, loadingMsg.message_id, message, { parse_mode: "HTML", reply_markup: keyboard });
-            } else {
-              await ctx.reply(message, { parse_mode: "HTML", reply_markup: keyboard });
-            }
-          } else {
-            if (loadingMsg) {
-              await ctx.api.editMessageText(loadingMsg.chat.id, loadingMsg.message_id, message, { parse_mode: "HTML" });
-            } else {
-              await ctx.reply(message, { parse_mode: "HTML" });
-            }
-          }
+          const message = await formatResultWithHanja(exact);
+          await sendOrEdit(ctx, loadingMsg, message, { parse_mode: "HTML" });
         }
-      } else if (data.startsWith("ha:")) {
-        const origin = data.slice(3);
-        const chars = hanjaOnly(origin);
-        const docs = await lookupHanja(chars.join(''));
-        const message = formatAllCharactersView(origin, docs, chars);
-        await ctx.reply(message, { parse_mode: "HTML" });
       }
     } catch (err) {
       console.error("Callback error:", err);

@@ -1,15 +1,5 @@
-# hanjaro
+# [hanjaro_bot](https://t.me/hanjaro_bot)
 
-To install dependencies:
+Korean dictionary Telegram bot with Hanja breakdowns.
 
-```bash
-bun install
-```
-
-To run:
-
-```bash
-bun run index.ts
-```
-
-This project was created using `bun init` in bun v1.3.3. [Bun](https://bun.com) is a fast all-in-one JavaScript runtime.
+Korean word → definition, English translation, Hanja breakdown. Type any word.
