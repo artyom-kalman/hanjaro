@@ -166,11 +166,12 @@ function formatHangulHanjaPage(
   pageDocs: NonNullable<HanjaDoc>[],
   page: number,
   totalPages: number,
+  total: number,
 ): string {
   const lines: string[] = [];
   const header = totalPages > 1
-    ? `Hanja for <b>${escapeHtml(syllable)}</b>  ·  page ${page + 1}/${totalPages}`
-    : `Hanja for <b>${escapeHtml(syllable)}</b>`;
+    ? `Hanja for <b>${escapeHtml(syllable)}</b>  ·  ${total} total  ·  page ${page + 1}/${totalPages}`
+    : `Hanja for <b>${escapeHtml(syllable)}</b>  ·  ${total} total`;
   lines.push(header);
 
   for (const doc of pageDocs) {
@@ -187,16 +188,10 @@ function formatHangulHanjaPage(
 
 function buildHangulHanjaKeyboard(
   syllable: string,
-  pageDocs: NonNullable<HanjaDoc>[],
   page: number,
   totalPages: number,
 ): InlineKeyboard {
   const keyboard = new InlineKeyboard();
-  for (const doc of pageDocs) {
-    let label = `${doc.character}  ·  ${doc.definition}`;
-    if (label.length > 50) label = label.slice(0, 49) + "…";
-    keyboard.text(label, `h:${doc.character}`).row();
-  }
   if (totalPages > 1) {
     if (page > 0) keyboard.text("‹ Prev", `hp:${syllable}:${page - 1}`);
     if (page < totalPages - 1) keyboard.text("Next ›", `hp:${syllable}:${page + 1}`);
@@ -347,8 +342,8 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
     const safePage = Math.max(0, Math.min(page, totalPages - 1));
     const start = safePage * HANGUL_PAGE_SIZE;
     const pageDocs = docs.slice(start, start + HANGUL_PAGE_SIZE);
-    const text = formatHangulHanjaPage(syllable, pageDocs, safePage, totalPages);
-    const keyboard = buildHangulHanjaKeyboard(syllable, pageDocs, safePage, totalPages);
+    const text = formatHangulHanjaPage(syllable, pageDocs, safePage, totalPages, docs.length);
+    const keyboard = buildHangulHanjaKeyboard(syllable, safePage, totalPages);
     const opts = { parse_mode: "HTML" as const, reply_markup: keyboard };
     if (edit) await ctx.editMessageText(text, opts);
     else await ctx.reply(text, opts);
@@ -411,14 +406,6 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
         const syllable = rest.slice(0, idx);
         const page = Number(rest.slice(idx + 1)) || 0;
         await handleHangulHanjaList(ctx, syllable, page, /*edit*/ true);
-      } else if (data.startsWith("h:")) {
-        const char = data.slice(2);
-        const docs = await lookupHanja(char);
-        const doc = docs[0];
-        const text = doc
-          ? formatHanjaBreakdown([doc], [char]).trimStart()
-          : `No Hanja entry for ${escapeHtml(char)}.`;
-        await ctx.reply(text, { parse_mode: "HTML" });
       } else if (data.startsWith("m:")) {
         const tc = Number(data.slice(2));
         const doc = await actionCtx.runQuery(internal.words.getByTargetCode, { targetCode: tc });
