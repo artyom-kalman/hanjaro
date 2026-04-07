@@ -40,3 +40,13 @@ export const getByCharacters = internalQuery({
     return results;
   },
 });
+
+export const getByHangul = internalQuery({
+  args: { hangul: v.string() },
+  handler: async (ctx, { hangul }) => {
+    return await ctx.db
+      .query("hanja")
+      .withIndex("by_hangul", (q) => q.eq("hangul", hangul))
+      .collect();
+  },
+});

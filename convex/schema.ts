@@ -8,7 +8,9 @@ export default defineSchema({
     hangul: v.optional(v.string()),
     korean: v.optional(v.string()),
     mandarin: v.optional(v.string()),
-  }).index("by_character", ["character"]),
+  })
+    .index("by_character", ["character"])
+    .index("by_hangul", ["hangul"]),
 
   words: defineTable({
     word: v.string(),
