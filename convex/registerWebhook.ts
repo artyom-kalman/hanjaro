@@ -36,10 +36,35 @@ export const register = internalAction(async () => {
     }),
   ]);
 
-  const data = await webhookRes.json();
-  console.log("Registered TG bot webhook:", data);
-  console.log("setMyDescription:", await descRes.json());
-  console.log("setMyShortDescription:", await shortDescRes.json());
-  console.log("setMyCommands:", await commandsRes.json());
-  return data;
+  const check = async (label: string, res: Response) => {
+    let body: any = null;
+    try {
+      body = await res.json();
+    } catch {
+      // leave body as null; handled below
+    }
+    const ok = res.ok && body && body.ok === true;
+    if (!ok) {
+      console.error(`Telegram ${label} failed:`, { status: res.status, body });
+    } else {
+      console.log(`Telegram ${label}:`, body);
+    }
+    return { label, ok, body };
+  };
+
+  const results = await Promise.all([
+    check("setWebhook", webhookRes),
+    check("setMyDescription", descRes),
+    check("setMyShortDescription", shortDescRes),
+    check("setMyCommands", commandsRes),
+  ]);
+
+  const failed = results.filter((r) => !r.ok);
+  if (failed.length > 0) {
+    throw new Error(
+      `Telegram webhook registration failed: ${failed.map((f) => f.label).join(", ")}`,
+    );
+  }
+
+  return results[0].body;
 });
