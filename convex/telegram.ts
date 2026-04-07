@@ -31,6 +31,28 @@ function hanjaOnly(origin: string): string[] {
   return [...origin].filter(c => c >= '\u4E00' && c <= '\u9FFF');
 }
 
+function isHangul(c: string): boolean {
+  return c >= "\uAC00" && c <= "\uD7AF";
+}
+
+function isHanja(c: string): boolean {
+  return c >= "\u4E00" && c <= "\u9FFF";
+}
+
+function allHanja(s: string): boolean {
+  const chars = [...s];
+  return chars.length > 0 && chars.every(isHanja);
+}
+
+const USAGE_TEXT =
+  "Send me a Korean word and I'll look it up in the dictionary.\n\n" +
+  "Examples:\n" +
+  "• 학생 — Korean word\n" +
+  "• 장 — single syllable (I'll ask what you want)\n" +
+  "• 學 — Hanja character";
+
+const HANGUL_PAGE_SIZE = 8;
+
 function escapeHtml(text: string): string {
   return text
     .replace(/&/g, "&amp;")
@@ -139,6 +161,50 @@ function formatHanjaBreakdown(
   return lines.join("\n");
 }
 
+function formatHangulHanjaPage(
+  syllable: string,
+  pageDocs: NonNullable<HanjaDoc>[],
+  page: number,
+  totalPages: number,
+  total: number,
+): string {
+  const lines: string[] = [];
+  const header = totalPages > 1
+    ? `Hanja for <b>${escapeHtml(syllable)}</b>  ·  ${total} total  ·  page ${page + 1}/${totalPages}`
+    : `Hanja for <b>${escapeHtml(syllable)}</b>  ·  ${total} total`;
+  lines.push(header);
+
+  for (const doc of pageDocs) {
+    lines.push("");
+    lines.push(`<b>${escapeHtml(doc.character)}</b>  ·  <i>${escapeHtml(doc.definition)}</i>`);
+    const readings: string[] = [];
+    if (doc.hangul) readings.push(`🇰🇷 ${escapeHtml(doc.hangul)}`);
+    if (doc.mandarin) readings.push(`🇨🇳 ${escapeHtml(doc.mandarin)}`);
+    if (readings.length > 0) lines.push(readings.join("  "));
+  }
+
+  return lines.join("\n");
+}
+
+function buildHangulHanjaKeyboard(
+  syllable: string,
+  page: number,
+  totalPages: number,
+): InlineKeyboard {
+  const keyboard = new InlineKeyboard();
+  if (totalPages > 1) {
+    if (page > 0) keyboard.text("‹ Prev", `hp:${syllable}:${page - 1}`);
+    if (page < totalPages - 1) keyboard.text("Next ›", `hp:${syllable}:${page + 1}`);
+  }
+  return keyboard;
+}
+
+function buildSyllableChoiceKeyboard(syllable: string): InlineKeyboard {
+  return new InlineKeyboard()
+    .text("Look up word", `wq:${syllable}`)
+    .text(`Hanja for ${syllable}`, `hh:${syllable}:0`);
+}
+
 function buildMeaningKeyboard(matches: DisplayResult[]): InlineKeyboard {
   const keyboard = new InlineKeyboard();
   for (const m of matches) {
@@ -161,6 +227,10 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
     return actionCtx.runQuery(internal.hanja.getByCharacters, {
       characters: [...origin],
     });
+  }
+
+  async function lookupHanjaByHangul(syllable: string): Promise<NonNullable<HanjaDoc>[]> {
+    return actionCtx.runQuery(internal.hanja.getByHangul, { hangul: syllable });
   }
 
   async function getCached(word: string): Promise<DisplayResult[]> {
@@ -238,27 +308,87 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
     });
   }
 
+  async function runWordLookup(ctx: Context, word: string): Promise<void> {
+    await handleWordLookup(ctx, word, async () => {
+      await ctx.replyWithChatAction("typing");
+      return ctx.reply(LOADING_FRAMES[0]);
+    });
+  }
+
+  async function handleSingleHanja(ctx: Context, char: string): Promise<void> {
+    const docs = await lookupHanja(char);
+    const doc = docs[0];
+    if (!doc) {
+      await ctx.reply(`No Hanja entry for ${escapeHtml(char)}.`, { parse_mode: "HTML" });
+      return;
+    }
+    await ctx.reply(formatHanjaBreakdown([doc], [char]).trimStart(), { parse_mode: "HTML" });
+  }
+
+  async function handleHangulHanjaList(
+    ctx: Context,
+    syllable: string,
+    page: number,
+    edit: boolean,
+  ): Promise<void> {
+    const docs = await lookupHanjaByHangul(syllable);
+    if (docs.length === 0) {
+      const text = `No Hanja found for ${escapeHtml(syllable)}.`;
+      if (edit) await ctx.editMessageText(text, { parse_mode: "HTML" });
+      else await ctx.reply(text, { parse_mode: "HTML" });
+      return;
+    }
+    const totalPages = Math.ceil(docs.length / HANGUL_PAGE_SIZE);
+    const safePage = Math.max(0, Math.min(page, totalPages - 1));
+    const start = safePage * HANGUL_PAGE_SIZE;
+    const pageDocs = docs.slice(start, start + HANGUL_PAGE_SIZE);
+    const text = formatHangulHanjaPage(syllable, pageDocs, safePage, totalPages, docs.length);
+    const keyboard = buildHangulHanjaKeyboard(syllable, safePage, totalPages);
+    const opts = { parse_mode: "HTML" as const, reply_markup: keyboard };
+    if (edit) await ctx.editMessageText(text, opts);
+    else await ctx.reply(text, opts);
+  }
+
   bot.command("start", async (ctx) => {
-    await ctx.reply(
-      "Korean word → definition, English translation, Hanja breakdown.\n\nType any word.",
-    );
+    await ctx.reply(USAGE_TEXT);
   });
 
   // --- Message handler ---
   bot.on("message:text", async (ctx) => {
-    const text = ctx.message.text;
-    const match = text.match(/[\uAC00-\uD7AF]+/);
-    if (!match) {
-      await ctx.reply("Send me a Korean word and I'll look it up in the dictionary.");
-      return;
-    }
+    const text = ctx.message.text.trim();
+    const chars = [...text];
 
-    const word = match[0];
     try {
-      await handleWordLookup(ctx, word, () => ctx.reply(LOADING_FRAMES[0]));
+      // Rule 2: single CJK char
+      if (chars.length === 1 && isHanja(chars[0]!)) {
+        await handleSingleHanja(ctx, chars[0]!);
+        return;
+      }
+      // Rule 3: multiple CJK chars
+      if (chars.length >= 2 && allHanja(text)) {
+        await ctx.reply("Please send one Hanja character at a time.");
+        return;
+      }
+      // Rule 4: single Hangul syllable
+      if (chars.length === 1 && isHangul(chars[0]!)) {
+        const syllable = chars[0]!;
+        await ctx.reply(
+          `<b>${escapeHtml(syllable)}</b> can mean a Korean word or share its reading with several Hanja.\nWhat do you want?`,
+          { parse_mode: "HTML", reply_markup: buildSyllableChoiceKeyboard(syllable) },
+        );
+        return;
+      }
+      // Rule 5: multi-syllable Hangul (existing flow)
+      const match = text.match(/[\uAC00-\uD7AF]{2,}/);
+      if (match) {
+        await handleWordLookup(ctx, match[0], () => ctx.reply(LOADING_FRAMES[0]));
+        return;
+      }
+      // Rule 6: fallback
+      await ctx.reply(USAGE_TEXT);
     } catch (err) {
-      console.error("Search error:", err);
-      await ctx.reply("Sorry, dictionary lookup failed. Please try again.");
+      console.error("Message error:", err);
+      await ctx.reply("Sorry, something went wrong. Please try again.");
     }
   });
 
@@ -267,11 +397,15 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
 
     try {
       if (data.startsWith("s:")) {
-        const word = data.slice(2);
-        await handleWordLookup(ctx, word, async () => {
-          await ctx.replyWithChatAction("typing");
-          return ctx.reply(LOADING_FRAMES[0]);
-        });
+        await runWordLookup(ctx, data.slice(2));
+      } else if (data.startsWith("wq:")) {
+        await runWordLookup(ctx, data.slice(3));
+      } else if (data.startsWith("hh:") || data.startsWith("hp:")) {
+        const rest = data.slice(3);
+        const idx = rest.lastIndexOf(":");
+        const syllable = rest.slice(0, idx);
+        const page = Number(rest.slice(idx + 1)) || 0;
+        await handleHangulHanjaList(ctx, syllable, page, /*edit*/ true);
       } else if (data.startsWith("m:")) {
         const tc = Number(data.slice(2));
         const doc = await actionCtx.runQuery(internal.words.getByTargetCode, { targetCode: tc });
