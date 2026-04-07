@@ -18,5 +18,7 @@ export default defineSchema({
     definition: v.string(),
     transWord: v.string(),
     transDfn: v.string(),
-  }).index("by_word", ["word"]),
+  })
+    .index("by_word", ["word"])
+    .index("by_target_code", ["targetCode"]),
 });
