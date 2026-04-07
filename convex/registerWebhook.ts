@@ -9,7 +9,7 @@ export const register = internalAction(async () => {
 
   const base = `https://api.telegram.org/bot${token}`;
 
-  const [webhookRes, descRes, shortDescRes] = await Promise.all([
+  const [webhookRes, descRes, shortDescRes, commandsRes] = await Promise.all([
     fetch(`${base}/setWebhook?url=${encodeURIComponent(webhookUrl)}`),
     fetch(`${base}/setMyDescription`, {
       method: "POST",
@@ -25,11 +25,21 @@ export const register = internalAction(async () => {
         short_description: "Korean dictionary with Hanja breakdowns",
       }),
     }),
+    fetch(`${base}/setMyCommands`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        commands: [
+          { command: "start", description: "Start the bot" },
+        ],
+      }),
+    }),
   ]);
 
   const data = await webhookRes.json();
   console.log("Registered TG bot webhook:", data);
   console.log("setMyDescription:", await descRes.json());
   console.log("setMyShortDescription:", await shortDescRes.json());
+  console.log("setMyCommands:", await commandsRes.json());
   return data;
 });
