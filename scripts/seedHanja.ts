@@ -1,12 +1,35 @@
 import { execSync } from "child_process";
 
+const isProd = process.argv.includes("--prod");
+const convexFlag = isProd ? "--prod " : "";
+if (isProd) {
+  console.log("⚠  TARGETING PRODUCTION DEPLOYMENT");
+} else {
+  console.log("Target deployment: dev");
+}
+
+type Meaning = { text: string; source: "unihan" | "override" };
+type RawEntry = {
+  unihanDefs?: string[];
+  hangul?: string;
+  korean?: string;
+  mandarin?: string;
+};
+type SeedEntry = {
+  character: string;
+  meanings: Meaning[];
+  hangul?: string;
+  korean?: string;
+  mandarin?: string;
+};
+type OverridesFile = {
+  overrides: Record<string, { meanings?: string[] }>;
+};
+
+// --- Load Unihan ---
 const text = await Bun.file("data/Unihan_Readings.txt").text();
 
-// Parse all entries grouped by codepoint
-const charData = new Map<
-  string,
-  { definition?: string; hangul?: string; korean?: string; mandarin?: string }
->();
+const charData = new Map<string, RawEntry>();
 
 for (const line of text.split("\n")) {
   if (!line.startsWith("U+")) continue;
@@ -19,11 +42,13 @@ for (const line of text.split("\n")) {
 
   switch (field) {
     case "kDefinition":
-      // Take first meaning before comma or semicolon
-      entry.definition = value.split(/[,;]/)[0].trim();
+      // Keep ALL meanings, split on comma or semicolon, drop empties
+      entry.unihanDefs = value
+        .split(/[,;]/)
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
       break;
     case "kHangul":
-      // Strip suffix like ":0E"
       entry.hangul = value.split(":")[0];
       break;
     case "kKorean":
@@ -35,27 +60,76 @@ for (const line of text.split("\n")) {
   }
 }
 
-// Filter to characters that have at least a definition
-const entries = [...charData.entries()]
-  .filter(([, d]) => d.definition)
-  .map(([character, d]) => ({
+// --- Load manual overrides ---
+const overridesRaw = await Bun.file("data/hanja-overrides.json").text();
+const overridesFile = JSON.parse(overridesRaw) as OverridesFile;
+const overrides = overridesFile.overrides ?? {};
+console.log(`Loaded ${Object.keys(overrides).length} override entries`);
+
+// --- Merge: every char that exists in Unihan OR overrides ---
+const allChars = new Set<string>([
+  ...charData.keys(),
+  ...Object.keys(overrides),
+]);
+
+const entries: SeedEntry[] = [];
+
+for (const character of allChars) {
+  const raw = charData.get(character) ?? {};
+  const override = overrides[character];
+
+  const meanings: Meaning[] = [];
+  const seen = new Set<string>();
+
+  // Overrides first, in file order
+  if (override?.meanings) {
+    for (const text of override.meanings) {
+      const trimmed = text.trim();
+      if (!trimmed) continue;
+      const key = trimmed.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      meanings.push({ text: trimmed, source: "override" });
+    }
+  }
+
+  // Then Unihan, skipping duplicates (case-insensitive)
+  if (raw.unihanDefs) {
+    for (const text of raw.unihanDefs) {
+      const key = text.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      meanings.push({ text, source: "unihan" });
+    }
+  }
+
+  if (meanings.length === 0) continue;
+
+  entries.push({
     character,
-    definition: d.definition!,
-    ...(d.hangul && { hangul: d.hangul }),
-    ...(d.korean && { korean: d.korean }),
-    ...(d.mandarin && { mandarin: d.mandarin }),
-  }));
+    meanings,
+    ...(raw.hangul && { hangul: raw.hangul }),
+    ...(raw.korean && { korean: raw.korean }),
+    ...(raw.mandarin && { mandarin: raw.mandarin }),
+  });
+}
 
-console.log(`Parsed ${entries.length} characters with definitions`);
+console.log(`Prepared ${entries.length} characters with meanings`);
 
-// Seed into Convex using `bunx convex run` (calls internal mutation)
-const BATCH_SIZE = 500;
+// --- Wipe existing hanja table before reseed (schema changed) ---
+console.log("Clearing existing hanja table...");
+execSync(`bunx convex run ${convexFlag}hanja:clearAll '{}'`, { stdio: "inherit" });
+
+// --- Seed in batches ---
+// Keep BATCH_SIZE small: JSON is passed as a shell argument and Linux's
+// argv limit (~128KB) will kill the process on dense batches at 500.
+const BATCH_SIZE = 100;
 for (let i = 0; i < entries.length; i += BATCH_SIZE) {
   const batch = entries.slice(i, i + BATCH_SIZE);
-  const args = JSON.stringify({ entries: batch });
-  execSync(`bunx convex run hanja:seedBatch '${args.replace(/'/g, "'\\''")}'`, {
-    stdio: "inherit",
-  });
+  execSync(
+    `bunx convex run ${convexFlag}hanja:seedBatch '${JSON.stringify({ entries: batch }).replace(/'/g, "'\\''")}'`,
+    { stdio: "inherit" }
+  );
   console.log(`Seeded ${Math.min(i + BATCH_SIZE, entries.length)} / ${entries.length}`);
 }
 

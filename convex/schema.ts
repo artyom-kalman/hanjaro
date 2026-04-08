@@ -4,7 +4,12 @@ import { v } from "convex/values";
 export default defineSchema({
   hanja: defineTable({
     character: v.string(),
-    definition: v.string(),
+    meanings: v.array(
+      v.object({
+        text: v.string(),
+        source: v.union(v.literal("unihan"), v.literal("override")),
+      })
+    ),
     hangul: v.optional(v.string()),
     korean: v.optional(v.string()),
     mandarin: v.optional(v.string()),

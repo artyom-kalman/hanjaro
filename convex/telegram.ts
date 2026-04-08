@@ -104,9 +104,14 @@ const posMap: Record<string, string> = {
   "보조 형용사": "Auxiliary Adjective",
 };
 
+type HanjaMeaning = {
+  text: string;
+  source: "unihan" | "override";
+};
+
 type HanjaDoc = {
   character: string;
-  definition: string;
+  meanings: HanjaMeaning[];
   hangul?: string;
   korean?: string;
   mandarin?: string;
@@ -146,12 +151,15 @@ function formatHanjaBreakdown(
     const char = chars[i];
     lines.push("");
 
-    if (!doc) {
+    if (!doc || doc.meanings.length === 0) {
       lines.push(`<b>${escapeHtml(char)}</b> — <i>no data</i>`);
       continue;
     }
 
-    lines.push(`<b>${escapeHtml(doc.character)}</b>  ·  <i>${escapeHtml(doc.definition)}</i>`);
+    lines.push(`<b>${escapeHtml(doc.character)}</b>`);
+    for (const m of doc.meanings) {
+      lines.push(` · <i>${escapeHtml(m.text)}</i>`);
+    }
     const readings: string[] = [];
     if (doc.hangul) readings.push(`🇰🇷 ${escapeHtml(doc.hangul)}`);
     if (doc.mandarin) readings.push(`🇨🇳 ${escapeHtml(doc.mandarin)}`);
@@ -176,7 +184,9 @@ function formatHangulHanjaPage(
 
   for (const doc of pageDocs) {
     lines.push("");
-    lines.push(`<b>${escapeHtml(doc.character)}</b>  ·  <i>${escapeHtml(doc.definition)}</i>`);
+    const meaningText = doc.meanings.map((m) => m.text).join(", ");
+    const meaningPart = meaningText ? `  ·  <i>${escapeHtml(meaningText)}</i>` : "";
+    lines.push(`<b>${escapeHtml(doc.character)}</b>${meaningPart}`);
     const readings: string[] = [];
     if (doc.hangul) readings.push(`🇰🇷 ${escapeHtml(doc.hangul)}`);
     if (doc.mandarin) readings.push(`🇨🇳 ${escapeHtml(doc.mandarin)}`);

@@ -1,12 +1,18 @@
 import { v } from "convex/values";
-import { internalMutation, internalQuery } from "./_generated/server.js";
+import { internalAction, internalMutation, internalQuery } from "./_generated/server.js";
+import { internal } from "./_generated/api.js";
 
 export const seedBatch = internalMutation({
   args: {
     entries: v.array(
       v.object({
         character: v.string(),
-        definition: v.string(),
+        meanings: v.array(
+          v.object({
+            text: v.string(),
+            source: v.union(v.literal("unihan"), v.literal("override")),
+          })
+        ),
         hangul: v.optional(v.string()),
         korean: v.optional(v.string()),
         mandarin: v.optional(v.string()),
@@ -23,6 +29,31 @@ export const seedBatch = internalMutation({
         await ctx.db.insert("hanja", entry);
       }
     }
+  },
+});
+
+export const clearBatch = internalMutation({
+  args: { limit: v.number() },
+  handler: async (ctx, { limit }) => {
+    const docs = await ctx.db.query("hanja").take(limit);
+    for (const doc of docs) {
+      await ctx.db.delete(doc._id);
+    }
+    return docs.length;
+  },
+});
+
+export const clearAll = internalAction({
+  args: {},
+  handler: async (ctx): Promise<number> => {
+    let total = 0;
+    const limit = 1000;
+    for (let i = 0; i < 50; i++) {
+      const deleted: number = await ctx.runMutation(internal.hanja.clearBatch, { limit });
+      total += deleted;
+      if (deleted < limit) break;
+    }
+    return total;
   },
 });
 
