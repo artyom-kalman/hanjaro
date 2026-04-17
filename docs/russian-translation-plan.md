@@ -43,14 +43,14 @@ Since this is a schema change (removing `transWord`/`transDfn`, adding `translat
 ```ts
 userSettings: defineTable({
   telegramUserId: v.number(),
-  lang: v.string(),  // "en" | "ru"
+  lang: v.union(v.literal("en"), v.literal("ru")),
 }).index("by_telegram_user_id", ["telegramUserId"]),
 ```
 
 **New file: `convex/userSettings.ts`**
 
 - `getByTelegramUserId(telegramUserId)` — internalQuery, returns user's settings or null
-- `setLang(telegramUserId, lang)` — internalMutation, upserts the language preference
+- `setLang(telegramUserId, lang)` — internalMutation, upserts the language preference. `lang` arg validator: `v.union(v.literal("en"), v.literal("ru"))`. Implementation must query by the `by_telegram_user_id` index and `patch` if a row exists, `insert` otherwise (Convex has no unique-index constraint — uniqueness is enforced here).
 
 ---
 
@@ -73,10 +73,10 @@ Update all functions to work with the nested `translations` structure:
 
 - `getAllByWord(word)` — unchanged query, but returned docs now have `translations` object
 - `getByTargetCode(targetCode)` — unchanged query, new shape
-- `saveMany(entries, lang)` — when saving KrDict results:
-  - Check if a doc with that `targetCode` already exists
-  - If exists: **patch** it to add the new language's translation (e.g., add `translations.ru` while keeping `translations.en`)
-  - If new: insert with the fetched language's translation
+- `saveMany(entries, lang)` — when saving KrDict results (runs inside a single Convex mutation, which is already a serializable transaction — no extra transaction API needed):
+  - Look up existing doc by `targetCode` via the index
+  - If exists: `ctx.db.patch(id, { translations: { ...existing.translations, [lang]: newTranslation } })`. The spread is required because `ctx.db.patch` shallow-merges at the top level only — passing `{ translations: { ru: ... } }` without the spread would replace the whole `translations` object and drop other languages
+  - If new: insert with `translations: { [lang]: newTranslation }`
 - Add `migrateToTranslations`/`migrateAll` for the data migration (see Migration section)
 
 ---
@@ -116,8 +116,9 @@ type DisplayResult = {
 4. If no cached docs → call KrDict API, insert new docs
 
 **Update `formatSearchResult(result, lang)`:**
-- Pick `translations[lang]` (fall back to `translations.en` if the requested lang is missing)
-- Show `🇷🇺` for Russian, `🇬🇧` for English
+- Prefer `translations[lang]`. If absent (e.g. an ru-only doc when `lang === "en"`, or vice versa), fall back to **any other available language** — do not hardcode `translations.en` as the fallback, since the new flow permits docs that only have `ru`
+- Track which language was actually rendered and pick the flag from that: `🇷🇺` for Russian, `🇬🇧` for English
+- In normal operation (step 3 in the cache logic always fetches the missing lang) at least one translation is guaranteed present; no runtime "both undefined" branch is needed beyond a TypeScript-level assertion
 
 ---
 
