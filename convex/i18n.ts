@@ -23,6 +23,7 @@ export interface UIStrings {
   usage: string;
   loadingFrames: readonly [string, string, string, string];
   settingsPrompt: string;
+  welcomePrompt: string;
   langConfirm: string;
 
   posMap: Record<string, string>;
@@ -70,6 +71,7 @@ const EN: UIStrings = {
     "Looking up..",
   ],
   settingsPrompt: "Choose language:",
+  welcomePrompt: "Welcome! Choose your language:",
   langConfirm: "English selected",
 
   posMap: {
@@ -129,6 +131,7 @@ const RU: UIStrings = {
     "• 學 — иероглиф ханча",
   loadingFrames: ["Ищу.", "Ищу..", "Ищу...", "Ищу.."],
   settingsPrompt: "Выберите язык:",
+  welcomePrompt: "Добро пожаловать! Выберите язык:",
   langConfirm: "Язык: Русский",
 
   posMap: {

@@ -261,6 +261,10 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
     return (settings?.lang as Lang | undefined) ?? "en";
   }
 
+  function pickPromptLang(code: string | undefined): Lang {
+    return code?.toLowerCase().startsWith("ru") ? "ru" : "en";
+  }
+
   async function getCached(word: string): Promise<DisplayResult[]> {
     return actionCtx.runQuery(internal.words.getAllByWord, { word });
   }
@@ -430,8 +434,24 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
   }
 
   bot.command("start", async (ctx) => {
-    const lang = await getUserLang(ctx.from?.id);
-    await ctx.reply(t(lang).usage);
+    const userId = ctx.from?.id;
+    const settings = userId === undefined
+      ? null
+      : await actionCtx.runQuery(internal.userSettings.getByTelegramUserId, {
+          telegramUserId: userId,
+        });
+
+    if (settings) {
+      await ctx.reply(t(settings.lang as Lang).usage);
+      return;
+    }
+
+    const promptLang = pickPromptLang(ctx.from?.language_code);
+    await ctx.reply(t(promptLang).welcomePrompt, {
+      reply_markup: new InlineKeyboard()
+        .text("🇬🇧 English", "langinit:en")
+        .text("🇷🇺 Русский", "langinit:ru"),
+    });
   });
 
   bot.command("settings", async (ctx) => {
@@ -514,6 +534,17 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
           });
         }
         await ctx.editMessageText(t(newLang).langConfirm);
+      } else if (data === "langinit:en" || data === "langinit:ru") {
+        const newLang: Lang = data === "langinit:en" ? "en" : "ru";
+        const userId = ctx.from?.id;
+        if (userId !== undefined) {
+          await actionCtx.runMutation(internal.userSettings.setLang, {
+            telegramUserId: userId,
+            lang: newLang,
+          });
+        }
+        const ui = t(newLang);
+        await ctx.editMessageText(`${ui.langConfirm}\n\n${ui.usage}`);
       }
     } catch (err) {
       console.error("Callback error:", err);
