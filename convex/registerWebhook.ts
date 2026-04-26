@@ -31,6 +31,7 @@ export const register = internalAction(async () => {
       body: JSON.stringify({
         commands: [
           { command: "start", description: "Start the bot" },
+          { command: "settings", description: "Language / Язык" },
         ],
       }),
     }),

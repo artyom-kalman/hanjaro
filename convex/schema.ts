@@ -23,9 +23,20 @@ export default defineSchema({
     targetCode: v.number(),
     pos: v.string(),
     definition: v.string(),
-    transWord: v.string(),
-    transDfn: v.string(),
+    translations: v.object({
+      en: v.optional(
+        v.object({ transWord: v.string(), transDfn: v.string() })
+      ),
+      ru: v.optional(
+        v.object({ transWord: v.string(), transDfn: v.string() })
+      ),
+    }),
   })
     .index("by_word", ["word"])
     .index("by_target_code", ["targetCode"]),
+
+  userSettings: defineTable({
+    telegramUserId: v.number(),
+    lang: v.union(v.literal("en"), v.literal("ru")),
+  }).index("by_telegram_user_id", ["telegramUserId"]),
 });
