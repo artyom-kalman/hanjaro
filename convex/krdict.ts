@@ -42,9 +42,12 @@ async function fetchWithRetry(url: string, retries = 5): Promise<Response> {
 
 // --- Search ---
 
+const TRANS_LANG_CODE: Record<"en" | "ru", string> = { en: "1", ru: "10" };
+
 export async function searchWord(
   apiKey: string,
-  query: string
+  query: string,
+  lang: "en" | "ru" = "en"
 ): Promise<KrdictSearchResult[]> {
   const params = new URLSearchParams({
     key: apiKey,
@@ -52,7 +55,7 @@ export async function searchWord(
     part: "word",
     sort: "dict",
     translated: "y",
-    trans_lang: "1",
+    trans_lang: TRANS_LANG_CODE[lang],
     type2: "chinese",
   });
 

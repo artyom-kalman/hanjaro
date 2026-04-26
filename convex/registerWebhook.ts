@@ -2,6 +2,36 @@
 
 import { internalAction } from "./_generated/server";
 
+type Locale = {
+  language_code?: string;
+  description: string;
+  short_description: string;
+  commands: { command: string; description: string }[];
+};
+
+const LOCALES: Locale[] = [
+  {
+    // default — English
+    description:
+      "Look up Korean words with English translations and Hanja character breakdowns.",
+    short_description: "Korean dictionary with Hanja breakdowns",
+    commands: [
+      { command: "start", description: "Start the bot" },
+      { command: "settings", description: "Language" },
+    ],
+  },
+  {
+    language_code: "ru",
+    description:
+      "Поиск корейских слов с переводом и разбором иероглифов ханча.",
+    short_description: "Корейский словарь с разбором ханча",
+    commands: [
+      { command: "start", description: "Запустить бота" },
+      { command: "settings", description: "Язык" },
+    ],
+  },
+];
+
 export const register = internalAction(async () => {
   const token = process.env.TELEGRAM_BOT_TOKEN!;
   const convexUrl = process.env.CONVEX_SITE_URL!;
@@ -9,32 +39,33 @@ export const register = internalAction(async () => {
 
   const base = `https://api.telegram.org/bot${token}`;
 
-  const [webhookRes, descRes, shortDescRes, commandsRes] = await Promise.all([
+  const post = (path: string, body: object) =>
+    fetch(`${base}/${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+  const requests: Promise<Response>[] = [
     fetch(`${base}/setWebhook?url=${encodeURIComponent(webhookUrl)}`),
-    fetch(`${base}/setMyDescription`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        description: "Look up Korean words with English translations and Hanja character breakdowns.",
-      }),
-    }),
-    fetch(`${base}/setMyShortDescription`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        short_description: "Korean dictionary with Hanja breakdowns",
-      }),
-    }),
-    fetch(`${base}/setMyCommands`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        commands: [
-          { command: "start", description: "Start the bot" },
-        ],
-      }),
-    }),
-  ]);
+  ];
+  const labels: string[] = ["setWebhook"];
+
+  for (const loc of LOCALES) {
+    const langTag = loc.language_code ? ` [${loc.language_code}]` : " [default]";
+    const langField = loc.language_code ? { language_code: loc.language_code } : {};
+
+    requests.push(post("setMyDescription", { description: loc.description, ...langField }));
+    labels.push(`setMyDescription${langTag}`);
+
+    requests.push(post("setMyShortDescription", { short_description: loc.short_description, ...langField }));
+    labels.push(`setMyShortDescription${langTag}`);
+
+    requests.push(post("setMyCommands", { commands: loc.commands, ...langField }));
+    labels.push(`setMyCommands${langTag}`);
+  }
+
+  const responses = await Promise.all(requests);
 
   const check = async (label: string, res: Response) => {
     let body: any = null;
@@ -52,12 +83,9 @@ export const register = internalAction(async () => {
     return { label, ok, body };
   };
 
-  const results = await Promise.all([
-    check("setWebhook", webhookRes),
-    check("setMyDescription", descRes),
-    check("setMyShortDescription", shortDescRes),
-    check("setMyCommands", commandsRes),
-  ]);
+  const results = await Promise.all(
+    responses.map((res, i) => check(labels[i]!, res))
+  );
 
   const failed = results.filter((r) => !r.ok);
   if (failed.length > 0) {
@@ -66,5 +94,5 @@ export const register = internalAction(async () => {
     );
   }
 
-  return results[0].body;
+  return results[0]!.body;
 });

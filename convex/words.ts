@@ -1,7 +1,9 @@
 import { v } from "convex/values";
 import { internalMutation, internalQuery } from "./_generated/server.js";
 
-const wordEntry = {
+const langValidator = v.union(v.literal("en"), v.literal("ru"));
+
+const krdictEntry = {
   word: v.string(),
   origin: v.string(),
   targetCode: v.number(),
@@ -32,16 +34,32 @@ export const getByTargetCode = internalQuery({
 });
 
 export const saveMany = internalMutation({
-  args: { entries: v.array(v.object(wordEntry)) },
-  handler: async (ctx, { entries }) => {
+  args: {
+    entries: v.array(v.object(krdictEntry)),
+    lang: langValidator,
+  },
+  handler: async (ctx, { entries, lang }) => {
     for (const entry of entries) {
+      const { transWord, transDfn, ...base } = entry;
+      const translation = { transWord, transDfn };
       const existing = await ctx.db
         .query("words")
-        .withIndex("by_target_code", (q) => q.eq("targetCode", entry.targetCode))
+        .withIndex("by_target_code", (q) =>
+          q.eq("targetCode", entry.targetCode)
+        )
         .first();
-      if (!existing) {
-        await ctx.db.insert("words", entry);
+      if (existing) {
+        const existingTranslations = existing.translations ?? {};
+        await ctx.db.patch(existing._id, {
+          translations: { ...existingTranslations, [lang]: translation },
+        });
+      } else {
+        await ctx.db.insert("words", {
+          ...base,
+          translations: { [lang]: translation },
+        });
       }
     }
   },
 });
+
