@@ -9,11 +9,13 @@
  */
 
 import type * as hanja from "../hanja.js";
+import type * as hanjaFormat from "../hanjaFormat.js";
 import type * as http from "../http.js";
 import type * as i18n from "../i18n.js";
 import type * as krdict from "../krdict.js";
 import type * as registerWebhook from "../registerWebhook.js";
 import type * as telegram from "../telegram.js";
+import type * as translate from "../translate.js";
 import type * as userSettings from "../userSettings.js";
 import type * as words from "../words.js";
 
@@ -25,11 +27,13 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   hanja: typeof hanja;
+  hanjaFormat: typeof hanjaFormat;
   http: typeof http;
   i18n: typeof i18n;
   krdict: typeof krdict;
   registerWebhook: typeof registerWebhook;
   telegram: typeof telegram;
+  translate: typeof translate;
   userSettings: typeof userSettings;
   words: typeof words;
 }>;

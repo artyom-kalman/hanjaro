@@ -81,3 +81,24 @@ export const getByHangul = internalQuery({
       .collect();
   },
 });
+
+export const saveTranslations = internalMutation({
+  args: {
+    lang: v.literal("ru"),
+    entries: v.array(
+      v.object({
+        id: v.id("hanja"),
+        meanings: v.array(v.object({ text: v.string() })),
+      })
+    ),
+  },
+  handler: async (ctx, { lang, entries }) => {
+    for (const entry of entries) {
+      if (entry.meanings.length === 0) continue;
+      const doc = await ctx.db.get(entry.id);
+      if (!doc) continue;
+      const translations = { ...(doc.translations ?? {}), [lang]: entry.meanings };
+      await ctx.db.patch(entry.id, { translations });
+    }
+  },
+});

@@ -10,6 +10,11 @@ export default defineSchema({
         source: v.union(v.literal("unihan"), v.literal("override")),
       })
     ),
+    translations: v.optional(
+      v.object({
+        ru: v.optional(v.array(v.object({ text: v.string() }))),
+      })
+    ),
     hangul: v.optional(v.string()),
     korean: v.optional(v.string()),
     mandarin: v.optional(v.string()),

@@ -43,6 +43,7 @@ export interface UIStrings {
     totalPages: number;
   }) => string;
   hanjaBreakdownNoData: string;
+  hanjaTranslateFailed: string;
 
   errors: {
     noResults: (word: string) => string;
@@ -107,6 +108,7 @@ const EN: UIStrings = {
       : `Hanja for ${s}  ·  ${total} total`;
   },
   hanjaBreakdownNoData: "<i>no data</i>",
+  hanjaTranslateFailed: "<i>(translation unavailable)</i>",
 
   errors: {
     noResults: (w) => `No results found for <b>${escapeHtml(w)}</b>.`,
@@ -167,6 +169,7 @@ const RU: UIStrings = {
       : `Ханча для ${s}  ·  всего ${total}`;
   },
   hanjaBreakdownNoData: "<i>нет данных</i>",
+  hanjaTranslateFailed: "<i>(перевод недоступен)</i>",
 
   errors: {
     noResults: (w) => `Ничего не найдено для <b>${escapeHtml(w)}</b>.`,
