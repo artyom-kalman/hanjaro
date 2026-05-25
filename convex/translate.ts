@@ -8,14 +8,10 @@ import { formatHanjaBreakdown } from "./hanjaFormat.js";
 import { t } from "./i18n.js";
 
 // OpenRouter is OpenAI-API-compatible — pointing baseURL at it lets us reuse
-// the openai SDK without adding a dep. Free-tier candidates (any of these can
-// be plugged in via OPENROUTER_MODEL):
-//   openai/gpt-oss-120b:free               — fastest (~0.7s latency, 27 tps)
-//   minimax/minimax-m2.5:free              — fast-ish (~1.7s latency)
-//   z-ai/glm-4.5-air:free                  — slow (~11s latency)
-//   nvidia/nemotron-3-super-120b-a12b:free — slow (~12s latency)
-//   nvidia/nemotron-3-nano-30b-a3b:free
-const DEFAULT_MODEL = "openai/gpt-oss-120b:free";
+// the openai SDK without adding a dep. Default model is Google Gemini 3.1
+// Flash Lite (paid, ~$0.25/$1.50 per 1M tok, ~0.84s latency, JSON mode
+// supported). Override via OPENROUTER_MODEL when experimenting.
+const DEFAULT_MODEL = "google/gemini-3.1-flash-lite";
 const TIMEOUT_MS = 5000;
 
 type CharInput = {
@@ -160,9 +156,9 @@ export const translateHanjaToRu = internalAction({
             reasoning_content?: string | null;
           }
         | undefined;
-      // gpt-oss-* via OpenRouter sometimes puts the answer in `reasoning`
-      // instead of `content`. Try the standard field first, then known
-      // alternates. Empty string from any of them is treated as "no answer".
+      // Some OpenRouter-hosted models occasionally route the answer into
+      // `reasoning` instead of `content`. Try the standard field first, then
+      // known alternates. Empty string from any of them is treated as "no answer".
       raw =
         (message?.content && message.content.trim()) ||
         (message?.reasoning && message.reasoning.trim()) ||
