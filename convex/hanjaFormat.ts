@@ -15,6 +15,14 @@ export function hasMissingRuTranslation(doc: NonNullable<HanjaDoc>): boolean {
   return doc.meanings.length > 0 && !(doc.translations?.ru?.length);
 }
 
+// True when at least one rendered gloss came from the AI translation step
+// (the `ru` branch of pickHanjaMeanings), so we only stamp the "translated by
+// AI" footer on messages that actually contain machine-generated text — not on
+// English source glosses or on failed translations that fell back to English.
+function hasRenderedAiTranslation(docs: HanjaDoc[], lang: Lang): boolean {
+  return lang === "ru" && docs.some((d) => (d?.translations?.ru?.length ?? 0) > 0);
+}
+
 export function formatHanjaBreakdown(
   docs: HanjaDoc[],
   chars: string[],
@@ -42,6 +50,11 @@ export function formatHanjaBreakdown(
     if (readings.length > 0) lines.push(readings.join("  "));
   }
 
+  if (hasRenderedAiTranslation(docs, lang)) {
+    lines.push("");
+    lines.push(t(lang).aiTranslationNote);
+  }
+
   return lines.join("\n");
 }
 
@@ -67,6 +80,11 @@ export function formatHangulHanjaPage(
     if (doc.hangul) readings.push(`🇰🇷 ${escapeHtml(doc.hangul)}`);
     if (doc.mandarin) readings.push(`🇨🇳 ${escapeHtml(doc.mandarin)}`);
     if (readings.length > 0) lines.push(readings.join("  "));
+  }
+
+  if (hasRenderedAiTranslation(pageDocs, lang)) {
+    lines.push("");
+    lines.push(t(lang).aiTranslationNote);
   }
 
   return lines.join("\n");

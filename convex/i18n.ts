@@ -44,6 +44,7 @@ export interface UIStrings {
   }) => string;
   hanjaBreakdownNoData: string;
   hanjaTranslateFailed: string;
+  aiTranslationNote: string;
 
   errors: {
     noResults: (word: string) => string;
@@ -109,6 +110,7 @@ const EN: UIStrings = {
   },
   hanjaBreakdownNoData: "<i>no data</i>",
   hanjaTranslateFailed: "<i>(translation unavailable)</i>",
+  aiTranslationNote: "<i>✨ Translated with AI</i>",
 
   errors: {
     noResults: (w) => `No results found for <b>${escapeHtml(w)}</b>.`,
@@ -170,6 +172,7 @@ const RU: UIStrings = {
   },
   hanjaBreakdownNoData: "<i>нет данных</i>",
   hanjaTranslateFailed: "<i>(перевод недоступен)</i>",
+  aiTranslationNote: "<i>✨ Перевод с помощью ИИ</i>",
 
   errors: {
     noResults: (w) => `Ничего не найдено для <b>${escapeHtml(w)}</b>.`,
