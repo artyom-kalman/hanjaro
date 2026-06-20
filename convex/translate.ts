@@ -12,7 +12,13 @@ import { t } from "./i18n.js";
 // Flash Lite (paid, ~$0.25/$1.50 per 1M tok, ~0.84s latency, JSON mode
 // supported). Override via OPENROUTER_MODEL when experimenting.
 const DEFAULT_MODEL = "google/gemini-3.1-flash-lite";
-const TIMEOUT_MS = 5000;
+// Per-attempt request timeout. The OpenAI SDK throws APIConnectionTimeoutError
+// when this elapses, which (unlike a manual AbortController signal) is retried
+// automatically. With MAX_RETRIES, worst-case latency before we give up is
+// roughly (MAX_RETRIES + 1) * TIMEOUT_MS plus exponential backoff. Safe here
+// because this runs as a detached scheduled action with no webhook deadline.
+const TIMEOUT_MS = 12000;
+const MAX_RETRIES = 2;
 
 type CharInput = {
   id: Id<"hanja">;
@@ -125,9 +131,6 @@ export const translateHanjaToRu = internalAction({
       baseURL: "https://openrouter.ai/api/v1",
     });
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
-
     let raw: string;
     try {
       const completion = await client.chat.completions.create(
@@ -139,7 +142,7 @@ export const translateHanjaToRu = internalAction({
           temperature: 0.2,
           response_format: { type: "json_object" },
         },
-        { signal: controller.signal }
+        { timeout: TIMEOUT_MS, maxRetries: MAX_RETRIES }
       );
       const choices = completion?.choices;
       if (!Array.isArray(choices) || choices.length === 0) {
@@ -173,8 +176,6 @@ export const translateHanjaToRu = internalAction({
     } catch (err) {
       console.error("translate: OpenRouter call failed", err);
       return { translatedCount: 0 };
-    } finally {
-      clearTimeout(timer);
     }
 
     if (!raw) return { translatedCount: 0 };
