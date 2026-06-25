@@ -3,6 +3,44 @@ import { escapeHtml, t, type Lang } from "./i18n.js";
 
 export type HanjaDoc = Doc<"hanja"> | null;
 
+// One per-language word translation. `source` distinguishes real KrDict text
+// from AI-generated output (absent on legacy rows ⇒ treated as KrDict). It's
+// what lets us stamp the AI footer without mislabeling genuine KrDict entries.
+export type Translation = {
+  transWord: string;
+  transDfn: string;
+  source?: "krdict" | "ai";
+};
+
+export type DisplayResult = {
+  word: string;
+  origin: string;
+  targetCode: number;
+  pos: string;
+  definition: string;
+  translations?: {
+    en?: Translation;
+    ru?: Translation;
+  };
+};
+
+export const LANG_FLAG: Record<Lang, string> = { en: "🇬🇧", ru: "🇷🇺" };
+
+// Prefers the user's language; falls back to the other language so a word with
+// only one KrDict translation still shows something. Returns the language it
+// actually picked so the caller can render the right flag.
+export function pickTranslation(
+  r: DisplayResult,
+  lang: Lang
+): { lang: Lang; translation: Translation } | null {
+  const tr = r.translations;
+  if (!tr) return null;
+  if (tr[lang]) return { lang, translation: tr[lang]! };
+  const other: Lang = lang === "en" ? "ru" : "en";
+  if (tr[other]) return { lang: other, translation: tr[other]! };
+  return null;
+}
+
 export function pickHanjaMeanings(
   doc: NonNullable<HanjaDoc>,
   lang: Lang,
@@ -17,10 +55,40 @@ export function hasMissingRuTranslation(doc: NonNullable<HanjaDoc>): boolean {
 
 // True when at least one rendered gloss came from the AI translation step
 // (the `ru` branch of pickHanjaMeanings), so we only stamp the "translated by
-// AI" footer on messages that actually contain machine-generated text — not on
-// English source glosses or on failed translations that fell back to English.
-function hasRenderedAiTranslation(docs: HanjaDoc[], lang: Lang): boolean {
+// AI" footer on messages that actually contain machine-generated char glosses
+// — not on English source glosses or on failed translations that fell back to
+// English. English never AI-translates char glosses (Unihan is native).
+export function hanjaGlossesAreAi(docs: HanjaDoc[], lang: Lang): boolean {
   return lang === "ru" && docs.some((d) => (d?.translations?.ru?.length ?? 0) > 0);
+}
+
+export function formatSearchResult(r: DisplayResult, lang: Lang): string {
+  const lines: string[] = [];
+  const originPart = r.origin
+    ? `  ·  <code>${escapeHtml(r.origin)}</code>`
+    : "";
+  lines.push(`📖  <b>${escapeHtml(r.word)}</b>${originPart}`);
+  if (r.pos) {
+    const localized = t(lang).posMap[r.pos];
+    const posText = localized
+      ? `${escapeHtml(r.pos)} (${escapeHtml(localized)})`
+      : escapeHtml(r.pos);
+    lines.push(`<i>${posText}</i>`);
+  }
+
+  const picked = pickTranslation(r, lang);
+  if (picked && picked.translation.transWord) {
+    lines.push("");
+    lines.push(
+      `${LANG_FLAG[picked.lang]} ${escapeHtml(picked.translation.transWord)}`
+    );
+  }
+  const transDfn = picked?.translation.transDfn ?? "";
+  if (r.definition || transDfn) lines.push("");
+  if (r.definition) lines.push(`<i>${escapeHtml(r.definition)}</i>`);
+  if (transDfn) lines.push(`<i>${escapeHtml(transDfn)}</i>`);
+
+  return lines.join("\n");
 }
 
 export function formatHanjaBreakdown(
@@ -50,12 +118,58 @@ export function formatHanjaBreakdown(
     if (readings.length > 0) lines.push(readings.join("  "));
   }
 
-  if (hasRenderedAiTranslation(docs, lang)) {
-    lines.push("");
-    lines.push(t(lang).aiTranslationNote);
-  }
-
   return lines.join("\n");
+}
+
+// Single AI-attribution footer line, language-aware.
+function aiFooter(lang: Lang): string {
+  return `\n\n${t(lang).aiTranslationNote}`;
+}
+
+// The one footer decision: show the AI footer when any rendered Hanja gloss is
+// AI (RU only) OR the word translation itself is AI (`source: "ai"`, either
+// language). The `source` marker is what keeps genuine KrDict translations from
+// being mislabeled as AI.
+export function shouldShowAiFooter(
+  hanjaDocs: HanjaDoc[],
+  result: DisplayResult,
+  lang: Lang,
+): boolean {
+  return (
+    hanjaGlossesAreAi(hanjaDocs, lang) ||
+    result.translations?.[lang]?.source === "ai"
+  );
+}
+
+// Full word-result message: header + POS + translation + definition, the Hanja
+// breakdown (if any), and exactly ONE AI footer. This is the single renderer
+// shared by the webhook (initial send) and the background orchestrator (in-place
+// upgrade), so the footer decision lives in one place.
+export function formatWordResult(
+  result: DisplayResult,
+  hanjaDocs: HanjaDoc[],
+  chars: string[],
+  lang: Lang,
+): string {
+  let body = formatSearchResult(result, lang);
+  if (chars.length > 0) {
+    body += "\n" + formatHanjaBreakdown(hanjaDocs, chars, lang);
+  }
+  if (shouldShowAiFooter(hanjaDocs, result, lang)) {
+    body += aiFooter(lang);
+  }
+  return body;
+}
+
+// Appends the AI footer to a Hanja-only message (single char / hangul page)
+// when any rendered char gloss is AI. These flows never carry a word
+// translation, so only the Hanja-AI condition applies.
+export function appendHanjaAiFooter(
+  body: string,
+  docs: HanjaDoc[],
+  lang: Lang,
+): string {
+  return hanjaGlossesAreAi(docs, lang) ? body + aiFooter(lang) : body;
 }
 
 export function formatHangulHanjaPage(
@@ -82,10 +196,5 @@ export function formatHangulHanjaPage(
     if (readings.length > 0) lines.push(readings.join("  "));
   }
 
-  if (hasRenderedAiTranslation(pageDocs, lang)) {
-    lines.push("");
-    lines.push(t(lang).aiTranslationNote);
-  }
-
-  return lines.join("\n");
+  return appendHanjaAiFooter(lines.join("\n"), pageDocs, lang);
 }

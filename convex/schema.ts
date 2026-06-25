@@ -30,10 +30,18 @@ export default defineSchema({
     definition: v.string(),
     translations: v.object({
       en: v.optional(
-        v.object({ transWord: v.string(), transDfn: v.string() })
+        v.object({
+          transWord: v.string(),
+          transDfn: v.string(),
+          source: v.optional(v.union(v.literal("krdict"), v.literal("ai"))),
+        })
       ),
       ru: v.optional(
-        v.object({ transWord: v.string(), transDfn: v.string() })
+        v.object({
+          transWord: v.string(),
+          transDfn: v.string(),
+          source: v.optional(v.union(v.literal("krdict"), v.literal("ai"))),
+        })
       ),
     }),
   })

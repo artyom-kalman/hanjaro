@@ -17,6 +17,7 @@ import type * as registerWebhook from "../registerWebhook.js";
 import type * as telegram from "../telegram.js";
 import type * as translate from "../translate.js";
 import type * as userSettings from "../userSettings.js";
+import type * as wordPrompt from "../wordPrompt.js";
 import type * as words from "../words.js";
 
 import type {
@@ -35,6 +36,7 @@ declare const fullApi: ApiFromModules<{
   telegram: typeof telegram;
   translate: typeof translate;
   userSettings: typeof userSettings;
+  wordPrompt: typeof wordPrompt;
   words: typeof words;
 }>;
 

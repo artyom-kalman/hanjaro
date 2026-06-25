@@ -68,6 +68,32 @@ export const getExamplesForCharacters = internalQuery({
   },
 });
 
+// Persists an AI-generated word translation for one language, tagging it with
+// `source: "ai"` so the renderer can stamp the AI footer and we never confuse
+// it with real KrDict text. Spreads existing translations so the other
+// language survives. No-op when the word doc is missing.
+export const saveAiWordTranslation = internalMutation({
+  args: {
+    targetCode: v.number(),
+    lang: langValidator,
+    transWord: v.string(),
+    transDfn: v.string(),
+  },
+  handler: async (ctx, { targetCode, lang, transWord, transDfn }) => {
+    const doc = await ctx.db
+      .query("words")
+      .withIndex("by_target_code", (q) => q.eq("targetCode", targetCode))
+      .first();
+    if (!doc) return;
+    await ctx.db.patch(doc._id, {
+      translations: {
+        ...doc.translations,
+        [lang]: { transWord, transDfn, source: "ai" as const },
+      },
+    });
+  },
+});
+
 export const saveMany = internalMutation({
   args: {
     entries: v.array(v.object(krdictEntry)),

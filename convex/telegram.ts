@@ -5,41 +5,17 @@ import {
   searchWord,
   type KrdictSearchResult,
 } from "./krdict.js";
-import { escapeHtml, t, type Lang } from "./i18n.js";
+import { t, type Lang } from "./i18n.js";
 import {
   formatHanjaBreakdown,
   formatHangulHanjaPage,
+  formatWordResult,
+  pickTranslation,
+  appendHanjaAiFooter,
   hasMissingRuTranslation,
+  type DisplayResult,
   type HanjaDoc,
 } from "./hanjaFormat.js";
-
-type Translation = { transWord: string; transDfn: string };
-
-type DisplayResult = {
-  word: string;
-  origin: string;
-  targetCode: number;
-  pos: string;
-  definition: string;
-  translations?: {
-    en?: Translation;
-    ru?: Translation;
-  };
-};
-
-const LANG_FLAG: Record<Lang, string> = { en: "🇬🇧", ru: "🇷🇺" };
-
-function pickTranslation(
-  r: DisplayResult,
-  lang: Lang
-): { lang: Lang; translation: Translation } | null {
-  const t = r.translations;
-  if (!t) return null;
-  if (t[lang]) return { lang, translation: t[lang]! };
-  const other: Lang = lang === "en" ? "ru" : "en";
-  if (t[other]) return { lang: other, translation: t[other]! };
-  return null;
-}
 
 type LoadingMsg = { chat: { id: number }; message_id: number } | null;
 
@@ -102,35 +78,6 @@ async function sendOrEdit(
     return loadingMsg;
   }
   return ctx.reply(text, opts);
-}
-
-function formatSearchResult(r: DisplayResult, lang: Lang): string {
-  const lines: string[] = [];
-  const originPart = r.origin
-    ? `  ·  <code>${escapeHtml(r.origin)}</code>`
-    : "";
-  lines.push(`📖  <b>${escapeHtml(r.word)}</b>${originPart}`);
-  if (r.pos) {
-    const localized = t(lang).posMap[r.pos];
-    const posText = localized
-      ? `${escapeHtml(r.pos)} (${escapeHtml(localized)})`
-      : escapeHtml(r.pos);
-    lines.push(`<i>${posText}</i>`);
-  }
-
-  const picked = pickTranslation(r, lang);
-  if (picked && picked.translation.transWord) {
-    lines.push("");
-    lines.push(
-      `${LANG_FLAG[picked.lang]} ${escapeHtml(picked.translation.transWord)}`
-    );
-  }
-  const transDfn = picked?.translation.transDfn ?? "";
-  if (r.definition || transDfn) lines.push("");
-  if (r.definition) lines.push(`<i>${escapeHtml(r.definition)}</i>`);
-  if (transDfn) lines.push(`<i>${escapeHtml(transDfn)}</i>`);
-
-  return lines.join("\n");
 }
 
 function buildHangulHanjaKeyboard(
@@ -272,28 +219,33 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
     result: DisplayResult,
     lang: Lang
   ): Promise<{ message: string; docs: HanjaDoc[]; chars: string[] }> {
-    let message = formatSearchResult(result, lang);
     const chars = result.origin ? hanjaOnly(result.origin) : [];
     let docs: HanjaDoc[] = [];
     if (chars.length > 0) {
       docs = await lookupHanja(chars.join(''));
-      message += "\n" + formatHanjaBreakdown(docs, chars, lang);
     }
+    const message = formatWordResult(result, docs, chars, lang);
     return { message, docs, chars };
   }
 
-  // Schedules a background OpenRouter call that edits the original result
-  // message in place once Russian glosses are ready. No status message — the
-  // user sees the EN breakdown immediately and the same message swaps to RU
-  // when the LLM responds (or gains a small failure note on timeout/error).
-  async function scheduleRussianHanjaUpgrade(
+  // Schedules the background orchestrator that edits the result message in
+  // place once AI translations are ready. No status message — the user sees the
+  // immediate result, and the same message upgrades when the LLM responds (or
+  // gains a small failure note on timeout/error). Fires when the word is missing
+  // its `transWord` in `lang` (en or ru), or — for RU only — when a Hanja char
+  // is missing its Russian gloss. Re-derives everything from targetCode, so the
+  // scheduled args stay tiny.
+  async function scheduleTranslationUpgrade(
     resultMsg: SentMessage,
-    prefix: string,
-    docs: NonNullable<HanjaDoc>[],
-    chars: string[],
+    result: DisplayResult,
+    docs: HanjaDoc[],
+    lang: Lang,
   ): Promise<void> {
-    const missing = docs.filter(hasMissingRuTranslation);
-    if (missing.length === 0) return;
+    const present = docs.filter((d): d is NonNullable<HanjaDoc> => d !== null);
+    const hanjaNeedsRu =
+      lang === "ru" && present.some(hasMissingRuTranslation);
+    const wordNeedsTranslation = !result.translations?.[lang]?.transWord;
+    if (!hanjaNeedsRu && !wordNeedsTranslation) return;
 
     await actionCtx.scheduler.runAfter(
       0,
@@ -301,15 +253,8 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
       {
         chatId: resultMsg.chat.id,
         messageId: resultMsg.message_id,
-        prefix,
-        chars,
-        docs: missing.map((d) => ({
-          id: d._id,
-          character: d.character,
-          hangul: d.hangul,
-          mandarin: d.mandarin,
-          englishMeanings: d.meanings.map((m) => m.text),
-        })),
+        targetCode: result.targetCode,
+        lang,
       },
     );
   }
@@ -344,13 +289,9 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
     }
 
     if (exact.length === 1) {
-      const { message, docs, chars } = await formatResultWithHanja(exact[0]!, lang);
+      const { message, docs } = await formatResultWithHanja(exact[0]!, lang);
       const resultMsg = await sendOrEdit(ctx, loadingMsg, message, { parse_mode: "HTML" });
-      if (lang === "ru") {
-        const present = docs.filter((d): d is NonNullable<HanjaDoc> => d !== null);
-        const prefix = formatSearchResult(exact[0]!, "ru");
-        await scheduleRussianHanjaUpgrade(resultMsg, prefix, present, chars);
-      }
+      await scheduleTranslationUpgrade(resultMsg, exact[0]!, docs, lang);
       return;
     }
 
@@ -383,7 +324,8 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
       await ctx.reply(t(lang).errors.noHanjaEntry(char), { parse_mode: "HTML" });
       return;
     }
-    await ctx.reply(formatHanjaBreakdown([doc], [char], lang).trimStart(), { parse_mode: "HTML" });
+    const breakdown = formatHanjaBreakdown([doc], [char], lang).trimStart();
+    await ctx.reply(appendHanjaAiFooter(breakdown, [doc], lang), { parse_mode: "HTML" });
   }
 
   async function handleHangulHanjaList(
@@ -499,13 +441,9 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
         if (!doc) {
           await ctx.reply(t(lang).errors.staleCache);
         } else {
-          const { message, docs, chars } = await formatResultWithHanja(doc, lang);
+          const { message, docs } = await formatResultWithHanja(doc, lang);
           const resultMsg = await ctx.reply(message, { parse_mode: "HTML" });
-          if (lang === "ru") {
-            const present = docs.filter((d): d is NonNullable<HanjaDoc> => d !== null);
-            const prefix = formatSearchResult(doc, "ru");
-            await scheduleRussianHanjaUpgrade(resultMsg, prefix, present, chars);
-          }
+          await scheduleTranslationUpgrade(resultMsg, doc, docs, lang);
         }
       } else if (data === "lang:en" || data === "lang:ru") {
         const newLang: Lang = data === "lang:en" ? "en" : "ru";

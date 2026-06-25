@@ -4,8 +4,13 @@ import { Bot } from "grammy";
 import { internalAction } from "./_generated/server.js";
 import { internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
-import { formatHanjaBreakdown } from "./hanjaFormat.js";
+import {
+  formatWordResult,
+  hasMissingRuTranslation,
+  type DisplayResult,
+} from "./hanjaFormat.js";
 import { t } from "./i18n.js";
+import { buildWordPrompt, parseWordResponse } from "./wordPrompt.js";
 
 // OpenRouter is OpenAI-API-compatible — pointing baseURL at it lets us reuse
 // the openai SDK without adding a dep. Default model is Google Gemini 3.1
@@ -89,6 +94,69 @@ function parseResponse(
   return result;
 }
 
+// Single OpenRouter JSON-mode chat completion. Centralizes client setup, the
+// timeout/retry config, and content extraction (some OpenRouter-hosted models
+// route the answer into `reasoning` instead of `content`). Returns the raw
+// response string, or null when the key is missing, the call fails, or the
+// model returned nothing usable. Callers parse the JSON themselves.
+async function callOpenRouterJson(prompt: string): Promise<string | null> {
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) {
+    console.error("translate: OPENROUTER_API_KEY not set");
+    return null;
+  }
+  const model = process.env.OPENROUTER_MODEL ?? DEFAULT_MODEL;
+  const client = new OpenAI({
+    apiKey,
+    baseURL: "https://openrouter.ai/api/v1",
+  });
+  try {
+    const completion = await client.chat.completions.create(
+      {
+        model,
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.2,
+        response_format: { type: "json_object" },
+      },
+      { timeout: TIMEOUT_MS, maxRetries: MAX_RETRIES }
+    );
+    const choices = completion?.choices;
+    if (!Array.isArray(choices) || choices.length === 0) {
+      console.error(
+        "translate: unexpected response shape",
+        JSON.stringify(completion)
+      );
+      return null;
+    }
+    const message = choices[0]?.message as
+      | {
+          content?: string | null;
+          reasoning?: string | null;
+          reasoning_content?: string | null;
+        }
+      | undefined;
+    // Some OpenRouter-hosted models occasionally route the answer into
+    // `reasoning` instead of `content`. Try the standard field first, then
+    // known alternates. Empty string from any of them is treated as "no answer".
+    const raw =
+      (message?.content && message.content.trim()) ||
+      (message?.reasoning && message.reasoning.trim()) ||
+      (message?.reasoning_content && message.reasoning_content.trim()) ||
+      "";
+    if (!raw) {
+      console.error(
+        "translate: empty content; full message =",
+        JSON.stringify(message)
+      );
+      return null;
+    }
+    return raw;
+  } catch (err) {
+    console.error("translate: OpenRouter call failed", err);
+    return null;
+  }
+}
+
 export const translateHanjaToRu = internalAction({
   args: {
     docs: v.array(
@@ -125,59 +193,7 @@ export const translateHanjaToRu = internalAction({
       examplesByChar.set(e.character, e.examples);
     }
 
-    const model = process.env.OPENROUTER_MODEL ?? DEFAULT_MODEL;
-    const client = new OpenAI({
-      apiKey,
-      baseURL: "https://openrouter.ai/api/v1",
-    });
-
-    let raw: string;
-    try {
-      const completion = await client.chat.completions.create(
-        {
-          model,
-          messages: [
-            { role: "user", content: buildPrompt(targets, examplesByChar) },
-          ],
-          temperature: 0.2,
-          response_format: { type: "json_object" },
-        },
-        { timeout: TIMEOUT_MS, maxRetries: MAX_RETRIES }
-      );
-      const choices = completion?.choices;
-      if (!Array.isArray(choices) || choices.length === 0) {
-        console.error(
-          "translate: unexpected response shape",
-          JSON.stringify(completion)
-        );
-        return { translatedCount: 0 };
-      }
-      const message = choices[0]?.message as
-        | {
-            content?: string | null;
-            reasoning?: string | null;
-            reasoning_content?: string | null;
-          }
-        | undefined;
-      // Some OpenRouter-hosted models occasionally route the answer into
-      // `reasoning` instead of `content`. Try the standard field first, then
-      // known alternates. Empty string from any of them is treated as "no answer".
-      raw =
-        (message?.content && message.content.trim()) ||
-        (message?.reasoning && message.reasoning.trim()) ||
-        (message?.reasoning_content && message.reasoning_content.trim()) ||
-        "";
-      if (!raw) {
-        console.error(
-          "translate: empty content; full message =",
-          JSON.stringify(message)
-        );
-      }
-    } catch (err) {
-      console.error("translate: OpenRouter call failed", err);
-      return { translatedCount: 0 };
-    }
-
+    const raw = await callOpenRouterJson(buildPrompt(targets, examplesByChar));
     if (!raw) return { translatedCount: 0 };
 
     let parsed: Map<string, string[]>;
@@ -207,64 +223,170 @@ export const translateHanjaToRu = internalAction({
   },
 });
 
-// Background job dispatched by the webhook handler. Does the slow OpenRouter
-// call + DB persist on its own time, then edits the original result message
-// in place — so the webhook stays inside grammy's 10s timeout and the user
-// sees a single message that upgrades from EN to RU when ready.
-export const scheduledTranslateAndEdit = internalAction({
+// Word-level AI translation for a single language (en or ru). Builds the
+// word prompt (grounded on POS, the Korean definition, and any Hanja origin
+// chars + their English meanings), calls the LLM in JSON mode, and persists
+// {transWord, transDfn, source:"ai"} via saveAiWordTranslation. Degrades
+// gracefully: any missing key / failure / unusable reply returns
+// { translated: false } without throwing to the caller.
+export const translateWordToLang = internalAction({
   args: {
-    chatId: v.number(),
-    messageId: v.number(),
-    prefix: v.string(),
-    chars: v.array(v.string()),
-    docs: v.array(
+    targetCode: v.number(),
+    lang: v.union(v.literal("en"), v.literal("ru")),
+    word: v.string(),
+    origin: v.string(),
+    pos: v.string(),
+    definition: v.string(),
+    hanjaContext: v.array(
       v.object({
-        id: v.id("hanja"),
         character: v.string(),
-        hangul: v.optional(v.string()),
-        mandarin: v.optional(v.string()),
         englishMeanings: v.array(v.string()),
       })
     ),
   },
-  handler: async (ctx, { chatId, messageId, prefix, chars, docs }) => {
+  handler: async (ctx, args): Promise<{ translated: boolean }> => {
+    const prompt = buildWordPrompt(
+      {
+        word: args.word,
+        pos: args.pos,
+        definition: args.definition,
+        hanjaContext: args.hanjaContext,
+      },
+      args.lang,
+    );
+
+    const raw = await callOpenRouterJson(prompt);
+    if (!raw) return { translated: false };
+
+    const parsed = parseWordResponse(raw);
+    if (!parsed) {
+      console.error("translateWordToLang: unusable response", raw);
+      return { translated: false };
+    }
+
+    await ctx.runMutation(internal.words.saveAiWordTranslation, {
+      targetCode: args.targetCode,
+      lang: args.lang,
+      transWord: parsed.transWord,
+      transDfn: parsed.transDfn,
+    });
+
+    return { translated: true };
+  },
+});
+
+// Background orchestrator dispatched by the webhook handler. Keyed only by
+// targetCode + lang, it re-derives everything (the word, its Hanja chars, the
+// Hanja docs), runs the needed independent LLM calls CONCURRENTLY — char-gloss
+// translation (RU only) and word-level translation (en or ru) — then re-renders
+// the full message and performs exactly ONE editMessageText. Re-deriving here
+// (rather than freezing a rendered prefix at schedule time) is what lets a newly
+// added word-translation line appear, and the single edit is what keeps the two
+// LLM calls from racing on the same message. Runs detached, so it can outlast
+// grammy's 10s webhook deadline.
+export const scheduledTranslateAndEdit = internalAction({
+  args: {
+    chatId: v.number(),
+    messageId: v.number(),
+    targetCode: v.number(),
+    lang: v.union(v.literal("en"), v.literal("ru")),
+  },
+  handler: async (ctx, { chatId, messageId, targetCode, lang }) => {
     const token = process.env.TELEGRAM_BOT_TOKEN;
     if (!token) {
       console.error("scheduledTranslateAndEdit: TELEGRAM_BOT_TOKEN not set");
       return;
     }
-    const bot = new Bot(token);
-    const ui = t("ru");
 
-    let translatedCount = 0;
+    const word = await ctx.runQuery(internal.words.getByTargetCode, {
+      targetCode,
+    });
+    if (!word) {
+      console.error("scheduledTranslateAndEdit: word not found", targetCode);
+      return;
+    }
+
+    const chars = [...word.origin].filter(
+      (c) => c >= "\u4E00" && c <= "\u9FFF",
+    );
+    const hanjaDocs = chars.length > 0
+      ? await ctx.runQuery(internal.hanja.getByCharacters, { characters: chars })
+      : [];
+    const presentHanja = hanjaDocs.filter(
+      (d): d is NonNullable<typeof d> => d !== null,
+    );
+
+    // Char glosses only ever AI-translate for Russian (English is native
+    // Unihan). The word call runs for whichever language KrDict left empty.
+    const missingHanja =
+      lang === "ru" ? presentHanja.filter(hasMissingRuTranslation) : [];
+    const wordNeedsTranslation = !word.translations[lang]?.transWord;
+    const attempted = missingHanja.length > 0 || wordNeedsTranslation;
+
+    const charPromise = missingHanja.length > 0
+      ? ctx.runAction(internal.translate.translateHanjaToRu, {
+          docs: missingHanja.map((d) => ({
+            id: d._id,
+            character: d.character,
+            hangul: d.hangul,
+            mandarin: d.mandarin,
+            englishMeanings: d.meanings.map((m) => m.text),
+          })),
+        })
+      : Promise.resolve({ translatedCount: 0 });
+    const wordPromise = wordNeedsTranslation
+      ? ctx.runAction(internal.translate.translateWordToLang, {
+          targetCode,
+          lang,
+          word: word.word,
+          origin: word.origin,
+          pos: word.pos,
+          definition: word.definition,
+          hanjaContext: presentHanja.map((d) => ({
+            character: d.character,
+            englishMeanings: d.meanings.map((m) => m.text),
+          })),
+        })
+      : Promise.resolve({ translated: false });
+
+    let charResult = { translatedCount: 0 };
+    let wordResult = { translated: false };
     try {
-      const result = await ctx.runAction(
-        internal.translate.translateHanjaToRu,
-        { docs },
-      );
-      translatedCount = result.translatedCount;
+      [charResult, wordResult] = await Promise.all([charPromise, wordPromise]);
     } catch (err) {
       console.error("scheduledTranslateAndEdit: translation failed", err);
     }
+    const producedSomething =
+      charResult.translatedCount > 0 || wordResult.translated;
 
-    // Re-query so the rendered breakdown reflects whatever made it into the
-    // cache. On failure (translatedCount === 0), pickHanjaMeanings falls back
-    // to English glosses — same content the user already sees, so we just
-    // append the failure note.
-    const refreshed = await ctx.runQuery(
-      internal.hanja.getByCharacters,
-      { characters: chars },
-    );
-    const breakdown = formatHanjaBreakdown(refreshed, chars, "ru");
-    const body = translatedCount === 0
-      ? `${prefix}\n${breakdown}\n\n${ui.hanjaTranslateFailed}`
-      : `${prefix}\n${breakdown}`;
+    // Re-query so the re-render reflects whatever made it into the cache.
+    const finalWord =
+      (await ctx.runQuery(internal.words.getByTargetCode, { targetCode })) ??
+      word;
+    const refreshedHanja = chars.length > 0
+      ? await ctx.runQuery(internal.hanja.getByCharacters, { characters: chars })
+      : [];
+    const display: DisplayResult = {
+      word: finalWord.word,
+      origin: finalWord.origin,
+      targetCode: finalWord.targetCode,
+      pos: finalWord.pos,
+      definition: finalWord.definition,
+      translations: finalWord.translations,
+    };
 
+    let body = formatWordResult(display, refreshedHanja, chars, lang);
+    if (attempted && !producedSomething) {
+      body += `\n\n${t(lang).aiTranslateFailed}`;
+    }
+
+    const bot = new Bot(token);
     try {
       await bot.api.editMessageText(chatId, messageId, body, {
         parse_mode: "HTML",
       });
     } catch (err) {
+      // Includes Telegram's "message is not modified" when nothing changed.
       console.error("scheduledTranslateAndEdit: editMessageText failed", err);
     }
   },
