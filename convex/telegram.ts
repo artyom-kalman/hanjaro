@@ -245,7 +245,8 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
     const hanjaNeedsRu =
       lang === "ru" && present.some(hasMissingRuTranslation);
     const wordNeedsTranslation = !result.translations?.[lang]?.transWord;
-    if (!hanjaNeedsRu && !wordNeedsTranslation) return;
+    const definitionNeeded = !result.definition;
+    if (!hanjaNeedsRu && !wordNeedsTranslation && !definitionNeeded) return;
 
     await actionCtx.scheduler.runAfter(
       0,

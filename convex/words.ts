@@ -78,19 +78,52 @@ export const saveAiWordTranslation = internalMutation({
     lang: langValidator,
     transWord: v.string(),
     transDfn: v.string(),
+    definition: v.optional(v.string()),
   },
-  handler: async (ctx, { targetCode, lang, transWord, transDfn }) => {
+  handler: async (ctx, { targetCode, lang, transWord, transDfn, definition }) => {
     const doc = await ctx.db
       .query("words")
       .withIndex("by_target_code", (q) => q.eq("targetCode", targetCode))
       .first();
     if (!doc) return;
-    await ctx.db.patch(doc._id, {
+
+    const patch: {
+      translations: typeof doc.translations;
+      definition?: string;
+    } = {
       translations: {
         ...doc.translations,
         [lang]: { transWord, transDfn, source: "ai" as const },
       },
-    });
+    };
+
+    const trimmedDefinition = definition?.trim();
+    if (trimmedDefinition && !doc.definition) {
+      patch.definition = trimmedDefinition;
+    }
+
+    await ctx.db.patch(doc._id, patch);
+  },
+});
+
+// Persists an AI-generated Korean definition for a word that already has a gloss
+// but no Korean definition. Patches `definition` only (never the translations, so
+// a real KrDict gloss is not relabeled as AI) and only when it is currently empty.
+// No-op when the word doc is missing or already has a definition.
+export const saveAiDefinition = internalMutation({
+  args: {
+    targetCode: v.number(),
+    definition: v.string(),
+  },
+  handler: async (ctx, { targetCode, definition }) => {
+    const trimmed = definition.trim();
+    if (!trimmed) return;
+    const doc = await ctx.db
+      .query("words")
+      .withIndex("by_target_code", (q) => q.eq("targetCode", targetCode))
+      .first();
+    if (!doc || doc.definition) return;
+    await ctx.db.patch(doc._id, { definition: trimmed });
   },
 });
 

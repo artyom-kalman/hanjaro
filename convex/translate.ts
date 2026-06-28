@@ -10,7 +10,13 @@ import {
   type DisplayResult,
 } from "./hanjaFormat.js";
 import { t } from "./i18n.js";
-import { buildWordPrompt, parseWordResponse } from "./wordPrompt.js";
+import {
+  buildDefinitionPrompt,
+  buildGlossFromDescriptionPrompt,
+  buildWordPrompt,
+  parseDefinitionResponse,
+  parseWordResponse,
+} from "./wordPrompt.js";
 
 // OpenRouter is OpenAI-API-compatible — pointing baseURL at it lets us reuse
 // the openai SDK without adding a dep. Default model is Google Gemini 3.1
@@ -223,12 +229,11 @@ export const translateHanjaToRu = internalAction({
   },
 });
 
-// Word-level AI translation for a single language (en or ru). Builds the
-// word prompt (grounded on POS, the Korean definition, and any Hanja origin
-// chars + their English meanings), calls the LLM in JSON mode, and persists
-// {transWord, transDfn, source:"ai"} via saveAiWordTranslation. Degrades
-// gracefully: any missing key / failure / unusable reply returns
-// { translated: false } without throwing to the caller.
+// Word-level AI translation for a single language (en or ru). Branches on
+// whether KrDict left a description (Korean definition and/or transDfn):
+// case 1 → Prompt A (word + Hanja, gloss + transDfn + Korean definition);
+// case 2 → Prompt B (description-grounded gloss only, transDfn pass-through).
+// Degrades gracefully: any failure / unusable reply returns { translated: false }.
 export const translateWordToLang = internalAction({
   args: {
     targetCode: v.number(),
@@ -237,6 +242,7 @@ export const translateWordToLang = internalAction({
     origin: v.string(),
     pos: v.string(),
     definition: v.string(),
+    transDfn: v.string(),
     hanjaContext: v.array(
       v.object({
         character: v.string(),
@@ -245,15 +251,28 @@ export const translateWordToLang = internalAction({
     ),
   },
   handler: async (ctx, args): Promise<{ translated: boolean }> => {
-    const prompt = buildWordPrompt(
-      {
-        word: args.word,
-        pos: args.pos,
-        definition: args.definition,
-        hanjaContext: args.hanjaContext,
-      },
-      args.lang,
-    );
+    const hasDescription = args.definition !== "" || args.transDfn !== "";
+    const hanjaContext = args.hanjaContext;
+
+    const prompt = hasDescription
+      ? buildGlossFromDescriptionPrompt(
+          {
+            word: args.word,
+            pos: args.pos,
+            hanjaContext,
+            description: args.definition || args.transDfn,
+          },
+          args.lang,
+        )
+      : buildWordPrompt(
+          {
+            word: args.word,
+            pos: args.pos,
+            definition: "",
+            hanjaContext,
+          },
+          args.lang,
+        );
 
     const raw = await callOpenRouterJson(prompt);
     if (!raw) return { translated: false };
@@ -264,11 +283,74 @@ export const translateWordToLang = internalAction({
       return { translated: false };
     }
 
-    await ctx.runMutation(internal.words.saveAiWordTranslation, {
+    const saveArgs: {
+      targetCode: number;
+      lang: "en" | "ru";
+      transWord: string;
+      transDfn: string;
+      definition?: string;
+    } = {
       targetCode: args.targetCode,
       lang: args.lang,
       transWord: parsed.transWord,
-      transDfn: parsed.transDfn,
+      transDfn: hasDescription ? args.transDfn : parsed.transDfn,
+    };
+
+    if (
+      !hasDescription &&
+      args.definition === "" &&
+      parsed.definition
+    ) {
+      saveArgs.definition = parsed.definition;
+    }
+
+    await ctx.runMutation(internal.words.saveAiWordTranslation, saveArgs);
+
+    return { translated: true };
+  },
+});
+
+// Generates a Korean definition (Prompt C) for a word that already has a gloss
+// but no Korean definition — the missed case where KrDict supplied a gloss but no
+// 뜻풀이. Saves the definition only, never touching translations, so a real KrDict
+// gloss is not relabeled as AI. Degrades gracefully.
+export const translateWordDefinition = internalAction({
+  args: {
+    targetCode: v.number(),
+    lang: v.union(v.literal("en"), v.literal("ru")),
+    word: v.string(),
+    pos: v.string(),
+    meaning: v.string(),
+    hanjaContext: v.array(
+      v.object({
+        character: v.string(),
+        englishMeanings: v.array(v.string()),
+      })
+    ),
+  },
+  handler: async (ctx, args): Promise<{ translated: boolean }> => {
+    const prompt = buildDefinitionPrompt(
+      {
+        word: args.word,
+        pos: args.pos,
+        hanjaContext: args.hanjaContext,
+        meaning: args.meaning,
+      },
+      args.lang,
+    );
+
+    const raw = await callOpenRouterJson(prompt);
+    if (!raw) return { translated: false };
+
+    const parsed = parseDefinitionResponse(raw);
+    if (!parsed) {
+      console.error("translateWordDefinition: unusable response", raw);
+      return { translated: false };
+    }
+
+    await ctx.runMutation(internal.words.saveAiDefinition, {
+      targetCode: args.targetCode,
+      definition: parsed.definition,
     });
 
     return { translated: true };
@@ -321,7 +403,14 @@ export const scheduledTranslateAndEdit = internalAction({
     const missingHanja =
       lang === "ru" ? presentHanja.filter(hasMissingRuTranslation) : [];
     const wordNeedsTranslation = !word.translations[lang]?.transWord;
-    const attempted = missingHanja.length > 0 || wordNeedsTranslation;
+    const existingTransDfn = word.translations[lang]?.transDfn ?? "";
+    // Prompt A (case 1: gloss missing AND no description) already emits a Korean
+    // definition, so only run the standalone definition call when case 1 won't.
+    const case1MakesDefinition =
+      wordNeedsTranslation && !word.definition && !existingTransDfn;
+    const definitionNeeded = !word.definition && !case1MakesDefinition;
+    const attempted =
+      missingHanja.length > 0 || wordNeedsTranslation || definitionNeeded;
 
     const charPromise = missingHanja.length > 0
       ? ctx.runAction(internal.translate.translateHanjaToRu, {
@@ -342,6 +431,20 @@ export const scheduledTranslateAndEdit = internalAction({
           origin: word.origin,
           pos: word.pos,
           definition: word.definition,
+          transDfn: existingTransDfn,
+          hanjaContext: presentHanja.map((d) => ({
+            character: d.character,
+            englishMeanings: d.meanings.map((m) => m.text),
+          })),
+        })
+      : Promise.resolve({ translated: false });
+    const defPromise = definitionNeeded
+      ? ctx.runAction(internal.translate.translateWordDefinition, {
+          targetCode,
+          lang,
+          word: word.word,
+          pos: word.pos,
+          meaning: word.translations[lang]?.transWord || existingTransDfn,
           hanjaContext: presentHanja.map((d) => ({
             character: d.character,
             englishMeanings: d.meanings.map((m) => m.text),
@@ -351,13 +454,20 @@ export const scheduledTranslateAndEdit = internalAction({
 
     let charResult = { translatedCount: 0 };
     let wordResult = { translated: false };
+    let defResult = { translated: false };
     try {
-      [charResult, wordResult] = await Promise.all([charPromise, wordPromise]);
+      [charResult, wordResult, defResult] = await Promise.all([
+        charPromise,
+        wordPromise,
+        defPromise,
+      ]);
     } catch (err) {
       console.error("scheduledTranslateAndEdit: translation failed", err);
     }
     const producedSomething =
-      charResult.translatedCount > 0 || wordResult.translated;
+      charResult.translatedCount > 0 ||
+      wordResult.translated ||
+      defResult.translated;
 
     // Re-query so the re-render reflects whatever made it into the cache.
     const finalWord =
