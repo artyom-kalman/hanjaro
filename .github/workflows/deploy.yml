@@ -26,8 +26,3 @@ jobs:
         run: bunx convex deploy
         env:
           CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
-
-      - name: Register Telegram webhook
-        run: bunx convex run --prod registerWebhook:register
-        env:
-          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
