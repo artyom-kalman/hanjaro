@@ -23,7 +23,7 @@ jobs:
         run: bun test
 
       - name: Deploy Convex functions
-        run: bunx convex deploy --prod
+        run: bunx convex deploy
         env:
           CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
 
