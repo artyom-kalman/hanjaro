@@ -34,6 +34,7 @@ const charData = new Map<string, RawEntry>();
 for (const line of text.split("\n")) {
   if (!line.startsWith("U+")) continue;
   const [codepoint, field, ...rest] = line.split("\t");
+  if (!codepoint) continue;
   const value = rest.join("\t");
   const char = String.fromCodePoint(parseInt(codepoint.slice(2), 16));
 
