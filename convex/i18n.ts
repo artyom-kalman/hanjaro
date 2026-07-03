@@ -43,6 +43,7 @@ export interface UIStrings {
     totalPages: number;
   }) => string;
   hanjaBreakdownNoData: string;
+  hanjaExamplesHeader: string;
   aiTranslateFailed: string;
   aiTranslationNote: string;
 
@@ -109,6 +110,7 @@ const EN: UIStrings = {
       : `Hanja for ${s}  ·  ${total} total`;
   },
   hanjaBreakdownNoData: "<i>no data</i>",
+  hanjaExamplesHeader: "Examples in Korean words",
   aiTranslateFailed: "<i>(translation unavailable)</i>",
   aiTranslationNote: "<i>✨ Translated with AI</i>",
 
@@ -171,6 +173,7 @@ const RU: UIStrings = {
       : `Ханча для ${s}  ·  всего ${total}`;
   },
   hanjaBreakdownNoData: "<i>нет данных</i>",
+  hanjaExamplesHeader: "Примеры в корейских словах",
   aiTranslateFailed: "<i>(перевод недоступен)</i>",
   aiTranslationNote: "<i>✨ Перевод с помощью ИИ</i>",
 

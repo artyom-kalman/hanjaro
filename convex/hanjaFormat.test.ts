@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  formatHanjaExamples,
   shouldShowAiFooter,
   type DisplayResult,
   type HanjaDoc,
@@ -58,5 +59,42 @@ describe("shouldShowAiFooter", () => {
       en: { transWord: "newspaper", transDfn: "a publication", source: "krdict" },
     });
     expect(shouldShowAiFooter(docs, result, "en")).toBe(false);
+  });
+});
+
+describe("formatHanjaExamples", () => {
+  test("renders Korean examples with Hanja origins and translated glosses", () => {
+    const examples: DisplayResult[] = [
+      {
+        word: "일월",
+        origin: "一月",
+        targetCode: 2,
+        pos: "명사",
+        definition: "한 해 열두 달 가운데 첫째 달.",
+        translations: {
+          en: { transWord: "January", transDfn: "The first month of the year." },
+        },
+      },
+    ];
+
+    expect(formatHanjaExamples(examples, "en")).toBe(
+      "\n<b>Examples in Korean words</b>\n" +
+        " · <b>일월</b>  <code>一月</code> — January",
+    );
+  });
+
+  test("falls back to the Korean definition when no translation is available", () => {
+    const examples: DisplayResult[] = [
+      {
+        word: "일가",
+        origin: "一家",
+        targetCode: 3,
+        pos: "명사",
+        definition: "한집안.",
+        translations: {},
+      },
+    ];
+
+    expect(formatHanjaExamples(examples, "en")).toContain(" — 한집안.");
   });
 });

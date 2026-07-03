@@ -24,6 +24,8 @@ export type DisplayResult = {
   };
 };
 
+export type HanjaExample = DisplayResult;
+
 export const LANG_FLAG: Record<Lang, string> = { en: "🇬🇧", ru: "🇷🇺" };
 
 // Prefers the user's language; falls back to the other language so a word with
@@ -116,6 +118,31 @@ export function formatHanjaBreakdown(
     if (doc.hangul) readings.push(`🇰🇷 ${escapeHtml(doc.hangul)}`);
     if (doc.mandarin) readings.push(`🇨🇳 ${escapeHtml(doc.mandarin)}`);
     if (readings.length > 0) lines.push(readings.join("  "));
+  }
+
+  return lines.join("\n");
+}
+
+export function formatHanjaExamples(
+  examples: HanjaExample[],
+  lang: Lang,
+): string {
+  if (examples.length === 0) return "";
+
+  const lines: string[] = ["", `<b>${t(lang).hanjaExamplesHeader}</b>`];
+  for (const example of examples) {
+    const picked = pickTranslation(example, lang);
+    const meaning =
+      picked?.translation.transWord ||
+      picked?.translation.transDfn ||
+      example.definition;
+    const originPart = example.origin
+      ? `  <code>${escapeHtml(example.origin)}</code>`
+      : "";
+    const meaningPart = meaning ? ` — ${escapeHtml(meaning)}` : "";
+    lines.push(
+      ` · <b>${escapeHtml(example.word)}</b>${originPart}${meaningPart}`,
+    );
   }
 
   return lines.join("\n");

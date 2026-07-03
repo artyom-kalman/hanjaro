@@ -2,11 +2,13 @@ import { Bot, InlineKeyboard, webhookCallback, type Context } from "grammy";
 import { httpAction } from "./_generated/server.js";
 import { internal } from "./_generated/api.js";
 import {
+  searchHanjaExamples,
   searchWord,
   type KrdictSearchResult,
 } from "./krdict.js";
 import { t, type Lang } from "./i18n.js";
 import {
+  formatHanjaExamples,
   formatHanjaBreakdown,
   formatHangulHanjaPage,
   formatWordResult,
@@ -184,6 +186,25 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
     return results.map((r) => krdictToDisplay(r, lang));
   }
 
+  async function lookupHanjaExamples(
+    character: string,
+    lang: Lang,
+  ): Promise<DisplayResult[]> {
+    try {
+      const examples = await searchHanjaExamples(apiKey, character, lang);
+      if (examples.length > 0) {
+        await actionCtx.runMutation(internal.words.saveMany, {
+          entries: examples,
+          lang,
+        });
+      }
+      return examples.map((r) => krdictToDisplay(r, lang));
+    } catch (err) {
+      console.error("Hanja examples lookup failed:", err);
+      return [];
+    }
+  }
+
   function cachedHasLang(docs: DisplayResult[], lang: Lang): boolean {
     return docs.some((d) => d.translations?.[lang] !== undefined);
   }
@@ -326,7 +347,9 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
       return;
     }
     const breakdown = formatHanjaBreakdown([doc], [char], lang).trimStart();
-    await ctx.reply(appendHanjaAiFooter(breakdown, [doc], lang), { parse_mode: "HTML" });
+    const examples = await lookupHanjaExamples(char, lang);
+    const body = breakdown + formatHanjaExamples(examples, lang);
+    await ctx.reply(appendHanjaAiFooter(body, [doc], lang), { parse_mode: "HTML" });
   }
 
   async function handleHangulHanjaList(

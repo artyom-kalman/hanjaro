@@ -86,3 +86,60 @@ export async function searchWord(
   });
 }
 
+export async function searchHanjaExamples(
+  apiKey: string,
+  character: string,
+  lang: "en" | "ru" = "en",
+  limit = 5
+): Promise<KrdictSearchResult[]> {
+  const params = new URLSearchParams({
+    key: apiKey,
+    q: character,
+    part: "word",
+    sort: "popular",
+    translated: "y",
+    trans_lang: TRANS_LANG_CODE[lang],
+    advanced: "y",
+    target: "4",
+    lang: "2",
+    method: "include",
+    type2: "chinese",
+    num: "20",
+  });
+
+  const res = await fetchWithRetry(
+    `https://krdict.korean.go.kr/api/search?${params}`
+  );
+  if (!res.ok) {
+    throw new Error(`krdict hanja examples failed: ${res.status} ${res.statusText}`);
+  }
+
+  const xml = await res.text();
+  const data = parser.parse(xml);
+  const channel = data?.channel;
+
+  if (!channel || channel.total === 0) return [];
+
+  const seen = new Set<number>();
+  const examples: KrdictSearchResult[] = [];
+  for (const item of asArray(channel.item)) {
+    const trans = item.sense?.translation;
+    const result = {
+      word: item.word ?? "",
+      origin: item.origin ?? "",
+      targetCode: item.target_code,
+      pos: item.pos ?? "",
+      definition: item.sense?.definition ?? "",
+      transWord: trans?.trans_word ?? "",
+      transDfn: trans?.trans_dfn ?? "",
+    };
+    if (!result.word || !result.origin.includes(character)) continue;
+    if (!/[\uAC00-\uD7AF]/.test(result.word)) continue;
+    if (seen.has(result.targetCode)) continue;
+    seen.add(result.targetCode);
+    examples.push(result);
+    if (examples.length >= limit) break;
+  }
+  return examples;
+}
+
