@@ -5,11 +5,6 @@ const parser = new XMLParser({
   attributeNamePrefix: "@_",
 });
 
-function asArray<T>(val: T | T[] | undefined): T[] {
-  if (val === undefined) return [];
-  return Array.isArray(val) ? val : [val];
-}
-
 // --- Types ---
 
 export interface KrdictSearchResult {
@@ -22,7 +17,12 @@ export interface KrdictSearchResult {
   transDfn: string;
 }
 
-// --- Fetch with retry ---
+// --- Helpers ---
+
+function asArray<T>(val: T | T[] | undefined): T[] {
+  if (val === undefined) return [];
+  return Array.isArray(val) ? val : [val];
+}
 
 async function fetchWithRetry(url: string, retries = 5): Promise<Response> {
   for (let i = 0; i < retries; i++) {
@@ -38,6 +38,71 @@ async function fetchWithRetry(url: string, retries = 5): Promise<Response> {
     }
   }
   throw new Error("unreachable");
+}
+
+function parseSearchItem(item: Record<string, unknown>): KrdictSearchResult {
+  const sense = item.sense as Record<string, unknown> | undefined;
+  const trans = sense?.translation as Record<string, string> | undefined;
+  return {
+    word: (item.word as string | undefined) ?? "",
+    origin: (item.origin as string | undefined) ?? "",
+    targetCode: item.target_code as number,
+    pos: (item.pos as string | undefined) ?? "",
+    definition: (sense?.definition as string | undefined) ?? "",
+    transWord: trans?.trans_word ?? "",
+    transDfn: trans?.trans_dfn ?? "",
+  };
+}
+
+async function fetchSearchItems(
+  params: URLSearchParams,
+  errorLabel: string,
+): Promise<Record<string, unknown>[]> {
+  const res = await fetchWithRetry(
+    `https://krdict.korean.go.kr/api/search?${params}`,
+  );
+  if (!res.ok) {
+    throw new Error(`${errorLabel}: ${res.status} ${res.statusText}`);
+  }
+
+  const xml = await res.text();
+  const data = parser.parse(xml) as { channel?: { total?: number; item?: unknown } };
+  const channel = data?.channel;
+
+  if (!channel || channel.total === 0) return [];
+  return asArray(channel.item) as Record<string, unknown>[];
+}
+
+function isHanjaWordExample(
+  result: KrdictSearchResult,
+  character: string,
+): boolean {
+  return (
+    result.word.length > 0 &&
+    result.origin.includes(character) &&
+    /[\uAC00-\uD7AF]/.test(result.word)
+  );
+}
+
+function collectHanjaExamples(
+  items: Record<string, unknown>[],
+  character: string,
+  limit: number,
+): KrdictSearchResult[] {
+  const seen = new Set<number>();
+  const examples: KrdictSearchResult[] = [];
+
+  for (const item of items) {
+    const result = parseSearchItem(item);
+    if (!isHanjaWordExample(result, character)) continue;
+    if (seen.has(result.targetCode)) continue;
+
+    seen.add(result.targetCode);
+    examples.push(result);
+    if (examples.length >= limit) break;
+  }
+
+  return examples;
 }
 
 // --- Search ---
@@ -59,31 +124,8 @@ export async function searchWord(
     type2: "chinese",
   });
 
-  const res = await fetchWithRetry(
-    `https://krdict.korean.go.kr/api/search?${params}`
-  );
-  if (!res.ok) {
-    throw new Error(`krdict search failed: ${res.status} ${res.statusText}`);
-  }
-
-  const xml = await res.text();
-  const data = parser.parse(xml);
-  const channel = data?.channel;
-
-  if (!channel || channel.total === 0) return [];
-
-  return asArray(channel.item).map((item: any) => {
-    const trans = item.sense?.translation;
-    return {
-      word: item.word ?? "",
-      origin: item.origin ?? "",
-      targetCode: item.target_code,
-      pos: item.pos ?? "",
-      definition: item.sense?.definition ?? "",
-      transWord: trans?.trans_word ?? "",
-      transDfn: trans?.trans_dfn ?? "",
-    };
-  });
+  const items = await fetchSearchItems(params, "krdict search failed");
+  return items.map(parseSearchItem);
 }
 
 export async function searchHanjaExamples(
@@ -107,39 +149,6 @@ export async function searchHanjaExamples(
     num: "20",
   });
 
-  const res = await fetchWithRetry(
-    `https://krdict.korean.go.kr/api/search?${params}`
-  );
-  if (!res.ok) {
-    throw new Error(`krdict hanja examples failed: ${res.status} ${res.statusText}`);
-  }
-
-  const xml = await res.text();
-  const data = parser.parse(xml);
-  const channel = data?.channel;
-
-  if (!channel || channel.total === 0) return [];
-
-  const seen = new Set<number>();
-  const examples: KrdictSearchResult[] = [];
-  for (const item of asArray(channel.item)) {
-    const trans = item.sense?.translation;
-    const result = {
-      word: item.word ?? "",
-      origin: item.origin ?? "",
-      targetCode: item.target_code,
-      pos: item.pos ?? "",
-      definition: item.sense?.definition ?? "",
-      transWord: trans?.trans_word ?? "",
-      transDfn: trans?.trans_dfn ?? "",
-    };
-    if (!result.word || !result.origin.includes(character)) continue;
-    if (!/[\uAC00-\uD7AF]/.test(result.word)) continue;
-    if (seen.has(result.targetCode)) continue;
-    seen.add(result.targetCode);
-    examples.push(result);
-    if (examples.length >= limit) break;
-  }
-  return examples;
+  const items = await fetchSearchItems(params, "krdict hanja examples failed");
+  return collectHanjaExamples(items, character, limit);
 }
-

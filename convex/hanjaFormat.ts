@@ -24,8 +24,6 @@ export type DisplayResult = {
   };
 };
 
-export type HanjaExample = DisplayResult;
-
 export const LANG_FLAG: Record<Lang, string> = { en: "🇬🇧", ru: "🇷🇺" };
 
 // Prefers the user's language; falls back to the other language so a word with
@@ -41,6 +39,17 @@ export function pickTranslation(
   const other: Lang = lang === "en" ? "ru" : "en";
   if (tr[other]) return { lang: other, translation: tr[other]! };
   return null;
+}
+
+// Best short gloss for compact displays (examples, keyboard labels): translated
+// word, then translated definition, then the Korean definition.
+export function pickResultMeaning(r: DisplayResult, lang: Lang): string {
+  const picked = pickTranslation(r, lang);
+  return (
+    picked?.translation.transWord ||
+    picked?.translation.transDfn ||
+    r.definition
+  );
 }
 
 export function pickHanjaMeanings(
@@ -124,18 +133,14 @@ export function formatHanjaBreakdown(
 }
 
 export function formatHanjaExamples(
-  examples: HanjaExample[],
+  examples: DisplayResult[],
   lang: Lang,
 ): string {
   if (examples.length === 0) return "";
 
   const lines: string[] = ["", `<b>${t(lang).hanjaExamplesHeader}</b>`];
   for (const example of examples) {
-    const picked = pickTranslation(example, lang);
-    const meaning =
-      picked?.translation.transWord ||
-      picked?.translation.transDfn ||
-      example.definition;
+    const meaning = pickResultMeaning(example, lang);
     const originPart = example.origin
       ? `  <code>${escapeHtml(example.origin)}</code>`
       : "";

@@ -32,9 +32,10 @@ const text = await Bun.file("data/Unihan_Readings.txt").text();
 const charData = new Map<string, RawEntry>();
 
 for (const line of text.split("\n")) {
+  // Unihan data rows start with "U+"; skip file headers and blank lines.
   if (!line.startsWith("U+")) continue;
   const [codepoint, field, ...rest] = line.split("\t");
-  if (!codepoint) continue;
+  if (!field) continue;
   const value = rest.join("\t");
   const char = String.fromCodePoint(parseInt(codepoint.slice(2), 16));
 
