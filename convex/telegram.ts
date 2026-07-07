@@ -186,12 +186,25 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
     return results.map((r) => krdictToDisplay(r, lang));
   }
 
+  const HANJA_EXAMPLES_TIMEOUT_MS = 5000;
+
   async function lookupHanjaExamples(
     character: string,
     lang: Lang,
   ): Promise<DisplayResult[]> {
     try {
-      const examples = await searchHanjaExamples(apiKey, character, lang);
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const examples = await Promise.race([
+        searchHanjaExamples(apiKey, character, lang),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error("Hanja examples lookup timed out")),
+            HANJA_EXAMPLES_TIMEOUT_MS,
+          );
+        }),
+      ]).finally(() => {
+        if (timer !== undefined) clearTimeout(timer);
+      });
       if (examples.length > 0) {
         await actionCtx.runMutation(internal.words.saveMany, {
           entries: examples,
