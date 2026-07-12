@@ -1,0 +1,278 @@
+<!doctype html>
+<!--
+  THROWAWAY UI PROTOTYPE
+  Three single-Hanja Telegram message variants, switchable with ?variant=A|B|C.
+  Run: bun scripts/serveSingleHanjaPrototype.ts
+-->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>Hanjaro — single Hanja message prototype</title>
+    <style>
+      :root {
+        --ink: #17212b;
+        --muted: #71808f;
+        --telegram-blue: #3390ec;
+        --telegram-deep: #2a7dc5;
+        --chat: #e7ebf0;
+        --message: #ffffff;
+        --line: #dbe2e8;
+        --paper: #f8fafc;
+        --shadow: 0 20px 70px rgba(27, 42, 55, 0.16);
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+      }
+
+      * { box-sizing: border-box; }
+      body {
+        min-height: 100vh;
+        margin: 0;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at 12% 10%, rgba(51, 144, 236, 0.12), transparent 27rem),
+          linear-gradient(125deg, #f7fbff 0%, #f5f7fa 47%, #edf3f7 100%);
+      }
+      button { font: inherit; }
+      .page { width: min(1120px, calc(100% - 40px)); margin: 0 auto; padding: 62px 0 140px; }
+      .eyebrow {
+        margin: 0 0 10px;
+        color: var(--telegram-deep);
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+      h1 { max-width: 720px; margin: 0; font-size: clamp(34px, 5vw, 62px); letter-spacing: -0.055em; line-height: 0.98; }
+      .intro { max-width: 650px; margin: 20px 0 0; color: #526272; font-size: 17px; line-height: 1.55; }
+      .why { display: flex; flex-wrap: wrap; gap: 8px; margin: 24px 0 35px; }
+      .why span { border: 1px solid #dce7ee; border-radius: 999px; padding: 6px 10px; background: rgba(255,255,255,0.7); color: #5c6b77; font-size: 12px; }
+
+      .stage {
+        overflow: hidden;
+        position: relative;
+        min-height: 625px;
+        border: 1px solid rgba(207, 217, 225, 0.85);
+        border-radius: 28px;
+        background: #eef2f6;
+        box-shadow: var(--shadow);
+      }
+      .variant { display: none; min-height: 625px; }
+      .variant.is-active { display: grid; grid-template-columns: minmax(0, 1fr) 370px; }
+      .telegram {
+        position: relative;
+        min-height: 625px;
+        overflow: hidden;
+        background-color: var(--chat);
+        background-image:
+          radial-gradient(circle at 10px 10px, rgba(87, 108, 126, 0.085) 1.4px, transparent 1.5px),
+          radial-gradient(circle at 22px 28px, rgba(87, 108, 126, 0.045) 1.2px, transparent 1.3px);
+        background-size: 36px 36px, 47px 47px;
+      }
+      .telegram-header {
+        position: relative;
+        z-index: 1;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        height: 64px;
+        padding: 0 20px;
+        color: white;
+        background: linear-gradient(90deg, #2586d9, #3d9be9);
+        box-shadow: 0 1px 0 rgba(0,0,0,0.08);
+      }
+      .avatar { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 50%; background: #f7c84b; color: #263342; font-family: Georgia, serif; font-size: 23px; font-weight: 700; }
+      .chat-name { font-size: 15px; font-weight: 750; }
+      .chat-status { margin-top: 2px; opacity: 0.77; font-size: 12px; }
+      .dots { margin-left: auto; font-size: 24px; letter-spacing: 1px; transform: translateY(-3px); }
+      .chat-body { display: flex; flex-direction: column; min-height: 561px; padding: 25px clamp(20px, 5.7vw, 76px); }
+      .user-bubble { align-self: flex-end; margin-bottom: 12px; border-radius: 16px 16px 4px 16px; padding: 9px 13px; background: #e2ffc8; box-shadow: 0 1px 1px rgba(41, 56, 72, 0.1); font-family: "Noto Serif CJK KR", "Malgun Gothic", serif; font-size: 19px; }
+      .bot-bubble { position: relative; align-self: flex-start; width: min(100%, 410px); border-radius: 5px 17px 17px 17px; background: var(--message); box-shadow: 0 1px 1px rgba(41, 56, 72, 0.12); }
+      .bot-bubble::before { content: ""; position: absolute; top: 0; left: -8px; border-top: 9px solid var(--message); border-left: 9px solid transparent; }
+      .bubble-time { position: absolute; right: 13px; bottom: 10px; color: #8b9aa5; font-size: 10px; }
+      .check { color: var(--telegram-blue); font-size: 13px; letter-spacing: -3px; }
+
+      .notes { display: flex; flex-direction: column; justify-content: center; padding: 42px 36px; background: #fbfdff; }
+      .variant-key { color: var(--telegram-blue); font-size: 11px; font-weight: 800; letter-spacing: .11em; text-transform: uppercase; }
+      .notes h2 { margin: 12px 0 13px; font-size: 29px; letter-spacing: -0.04em; line-height: 1.02; }
+      .notes p { margin: 0; color: #566674; font-size: 14px; line-height: 1.55; }
+      .notes dl { margin: 28px 0 0; }
+      .notes dt { margin-top: 18px; color: #1f2c37; font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+      .notes dd { margin: 5px 0 0; color: #60707e; font-size: 13px; line-height: 1.45; }
+      .ruler { width: 28px; height: 3px; margin: 24px 0 0; border-radius: 3px; background: #f0c548; }
+
+      /* A — compact reference */
+      .reference { padding: 17px 17px 32px; }
+      .reference-top { display: flex; align-items: center; gap: 11px; padding-right: 48px; }
+      .hanja-inline { font-family: "Noto Serif CJK KR", "Batang", serif; font-size: 44px; line-height: .9; font-weight: 700; }
+      .reading { color: #526474; font-size: 14px; }
+      .dot { color: #a7b3bd; }
+      .core-meaning { margin: 13px 0 15px; color: #344653; font-size: 15px; line-height: 1.45; }
+      .example-rule { height: 1px; margin: 0 -17px 12px; background: #edf0f3; }
+      .section-label { margin-bottom: 8px; color: #788896; font-size: 10px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+      .compact-example { display: grid; grid-template-columns: 52px 48px 1fr; gap: 7px; padding: 5px 0; font-size: 14px; line-height: 1.25; }
+      .compact-example strong { font-family: "Noto Serif CJK KR", "Malgun Gothic", sans-serif; }
+      .origin { color: #8b99a4; font-family: "Noto Serif CJK KR", serif; }
+      .meaning { color: #526473; }
+
+      /* B — character first / action menu */
+      .learning { overflow: hidden; padding: 0; }
+      .learning-main { padding: 20px 20px 18px; text-align: center; }
+      .hanja-hero { font-family: "Noto Serif CJK KR", "Batang", serif; font-size: 73px; line-height: .9; font-weight: 700; }
+      .learn-readings { margin-top: 9px; color: #697b88; font-size: 13px; }
+      .learn-gloss { margin: 12px auto 0; color: #344653; font-size: 15px; line-height: 1.35; }
+      .action-intro { border-top: 1px solid #edf0f3; padding: 13px 14px 9px; color: #7c8d99; font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+      .word-action { display: flex; align-items: center; justify-content: space-between; width: 100%; border: 0; border-top: 1px solid #edf0f3; padding: 12px 16px; color: #267cc7; background: white; cursor: pointer; text-align: left; }
+      .word-action:hover { background: #f5faff; }
+      .word-action:focus-visible, .inline-button:focus-visible, .switcher button:focus-visible { outline: 3px solid rgba(51, 144, 236, .42); outline-offset: -3px; }
+      .word-action strong { font-family: "Noto Serif CJK KR", "Malgun Gothic", sans-serif; font-size: 15px; }
+      .word-action span { color: #758694; font-size: 13px; }
+      .chevron { color: #a5b3bd; font-size: 20px; line-height: 12px; }
+
+      /* C — progressive disclosure */
+      .reveal { padding: 20px 20px 37px; }
+      .reveal-head { display: flex; align-items: center; gap: 15px; padding-right: 47px; }
+      .hanja-medallion { display: grid; place-items: center; flex: 0 0 auto; width: 65px; height: 65px; border: 1px solid #e3eaf0; border-radius: 15px; color: #202f3b; background: #fbfcfd; font-family: "Noto Serif CJK KR", "Batang", serif; font-size: 43px; font-weight: 700; }
+      .reveal-title { font-family: "Noto Serif CJK KR", "Malgun Gothic", sans-serif; font-size: 20px; font-weight: 750; }
+      .reveal-meta { margin-top: 4px; color: #72828e; font-size: 13px; }
+      .reveal-gloss { margin: 16px 0 15px; color: #40515f; font-size: 15px; }
+      .inline-button { width: 100%; border: 0; border-radius: 8px; padding: 10px 13px; color: #247cc8; background: #edf6fe; cursor: pointer; font-size: 14px; font-weight: 650; }
+      .inline-button:hover { background: #e2f1ff; }
+      .expanded { display: none; }
+      .reveal.is-expanded .overview { display: none; }
+      .reveal.is-expanded .expanded { display: block; }
+      .expanded-title { margin: 1px 0 12px; color: #60727f; font-size: 12px; font-weight: 760; letter-spacing: .06em; text-transform: uppercase; }
+      .expanded .compact-example { grid-template-columns: 53px 52px 1fr; padding: 8px 0; }
+      .back-button { margin-top: 13px; }
+
+      .state-line { margin-top: 18px; color: #8b99a4; font-size: 11px; }
+      .state-line b { color: #526370; }
+      .switcher {
+        position: fixed;
+        z-index: 10;
+        bottom: 22px;
+        left: 50%;
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        transform: translateX(-50%);
+        border: 1px solid rgba(19, 36, 49, .22);
+        border-radius: 999px;
+        padding: 5px;
+        color: white;
+        background: rgba(27, 43, 55, 0.93);
+        box-shadow: 0 10px 30px rgba(19, 32, 42, .25);
+        backdrop-filter: blur(12px);
+      }
+      .switcher button { min-width: 35px; height: 35px; border: 0; border-radius: 50%; color: white; background: transparent; cursor: pointer; font-size: 20px; }
+      .switcher button:hover { background: rgba(255,255,255,.13); }
+      .switcher-label { width: 170px; color: #f3f8fc; font-size: 12px; font-weight: 700; text-align: center; }
+      .switcher-label small { display: block; margin-top: 1px; color: #afc1d0; font-size: 10px; font-weight: 500; }
+      @media (max-width: 800px) {
+        .page { width: min(100% - 24px, 520px); padding-top: 35px; }
+        .intro { font-size: 15px; }
+        .stage { min-height: auto; border-radius: 20px; }
+        .variant.is-active { display: block; min-height: 0; }
+        .telegram, .chat-body { min-height: 510px; }
+        .notes { padding: 27px 25px 34px; }
+        .notes dl { display: grid; grid-template-columns: 1fr 1fr; gap: 0 22px; margin-top: 14px; }
+        .notes dt { margin-top: 16px; }
+        .switcher { bottom: 12px; }
+      }
+      @media (prefers-reduced-motion: no-preference) { .variant.is-active { animation: appear .24s ease-out; } @keyframes appear { from { opacity: .35; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } } }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <p class="eyebrow">Hanjaro · throwaway design prototype</p>
+      <h1>One character.<br />A little more breathing room.</h1>
+      <p class="intro">Three real Telegram-style treatments for a single Hanja lookup. They disagree about what the first reply should optimise for: reference, practice, or focus.</p>
+      <div class="why"><span>Example: 學 · 학 · xué</span><span>Use ← / → to compare</span><span>Buttons are interactive</span></div>
+
+      <section class="stage" aria-live="polite">
+        <article class="variant" data-variant="A">
+          <section class="telegram" aria-label="Telegram chat preview, compact reference card">
+            <header class="telegram-header"><div class="avatar">學</div><div><div class="chat-name">Hanjaro</div><div class="chat-status">bot</div></div><div class="dots">•••</div></header>
+            <div class="chat-body"><div class="user-bubble">學</div><div class="bot-bubble reference">
+              <div class="reference-top"><strong class="hanja-inline">學</strong><span class="reading">학</span><span class="dot">·</span><span class="reading">xué</span></div>
+              <p class="core-meaning"><i>study · learning · school</i></p><div class="example-rule"></div>
+              <div class="section-label">Common words</div>
+              <div class="compact-example"><strong>학생</strong><span class="origin">學生</span><span class="meaning">student</span></div>
+              <div class="compact-example"><strong>학교</strong><span class="origin">學校</span><span class="meaning">school</span></div>
+              <div class="compact-example"><strong>학문</strong><span class="origin">學問</span><span class="meaning">learning</span></div>
+              <span class="bubble-time">12:42 <span class="check">✓✓</span></span>
+            </div></div>
+          </section>
+          <aside class="notes"><div class="variant-key">A · Compact reference</div><h2>Everything, but in one glance.</h2><p>Turns the existing line-by-line list into a reference strip: character, readings, core idea, then only the three most useful examples.</p><div class="ruler"></div><dl><dt>Primary behaviour</dt><dd>Read and leave.</dd><dt>Message treatment</dt><dd>Quiet text bubble with an internal divider.</dd><dt>Build cost</dt><dd>Low — formatting and example limit only.</dd></dl><div class="state-line">Current state: <b>all information is visible</b></div></aside>
+        </article>
+
+        <article class="variant" data-variant="B">
+          <section class="telegram" aria-label="Telegram chat preview, word actions">
+            <header class="telegram-header"><div class="avatar">學</div><div><div class="chat-name">Hanjaro</div><div class="chat-status">bot</div></div><div class="dots">•••</div></header>
+            <div class="chat-body"><div class="user-bubble">學</div><div class="bot-bubble learning">
+              <div class="learning-main"><div class="hanja-hero">學</div><div class="learn-readings">학 &nbsp;·&nbsp; xué</div><div class="learn-gloss"><i>study · learning · school</i></div></div>
+              <div class="action-intro">Learn it in a word</div>
+              <button class="word-action" type="button"><strong>학생</strong><span>student</span><i class="chevron">›</i></button>
+              <button class="word-action" type="button"><strong>학교</strong><span>school</span><i class="chevron">›</i></button>
+              <button class="word-action" type="button"><strong>학문</strong><span>learning</span><i class="chevron">›</i></button>
+              <span class="bubble-time">12:42 <span class="check">✓✓</span></span>
+            </div></div>
+          </section>
+          <aside class="notes"><div class="variant-key">B · Learning actions</div><h2>Examples become the next lesson.</h2><p>The character is given real visual authority. Examples stop being dense reference text and become tap targets that open a full word lookup.</p><div class="ruler"></div><dl><dt>Primary behaviour</dt><dd>Choose a word to explore.</dd><dt>Message treatment</dt><dd>Character card plus Telegram-native inline action rows.</dd><dt>Build cost</dt><dd>Low/medium — reuse the existing word-lookup callback.</dd></dl><div class="state-line">Current state: <b>examples are actions, not a list</b></div></aside>
+        </article>
+
+        <article class="variant" data-variant="C">
+          <section class="telegram" aria-label="Telegram chat preview, progressive disclosure">
+            <header class="telegram-header"><div class="avatar">學</div><div><div class="chat-name">Hanjaro</div><div class="chat-status">bot</div></div><div class="dots">•••</div></header>
+            <div class="chat-body"><div class="user-bubble">學</div><div class="bot-bubble reveal" id="reveal-bubble">
+              <div class="overview"><div class="reveal-head"><div class="hanja-medallion">學</div><div><div class="reveal-title">학 <span class="dot">·</span> xué</div><div class="reveal-meta">Hanja character</div></div></div><p class="reveal-gloss"><i>study · learning · school</i></p><button class="inline-button" id="examples-button" type="button">Examples in Korean words · 5</button></div>
+              <div class="expanded"><div class="expanded-title">學 in Korean words</div><div class="compact-example"><strong>학생</strong><span class="origin">學生</span><span class="meaning">student</span></div><div class="compact-example"><strong>학교</strong><span class="origin">學校</span><span class="meaning">school</span></div><div class="compact-example"><strong>학문</strong><span class="origin">學問</span><span class="meaning">learning</span></div><div class="compact-example"><strong>대학</strong><span class="origin">大學</span><span class="meaning">university</span></div><div class="compact-example"><strong>학원</strong><span class="origin">學院</span><span class="meaning">academy</span></div><button class="inline-button back-button" id="back-button" type="button">‹ Character</button></div>
+              <span class="bubble-time">12:42 <span class="check">✓✓</span></span>
+            </div></div>
+          </section>
+          <aside class="notes"><div class="variant-key">C · Progressive disclosure</div><h2>The default answer stays tiny.</h2><p>Give the character a small identity card, then let people ask for examples. Tap the blue button here to see the expanded message state.</p><div class="ruler"></div><dl><dt>Primary behaviour</dt><dd>Answer first; explore on demand.</dd><dt>Message treatment</dt><dd>Compact preview that edits in place to a focused examples view.</dd><dt>Build cost</dt><dd>Medium — add two callbacks and defer the examples request.</dd></dl><div class="state-line" id="reveal-state">Current state: <b>character overview</b></div></aside>
+        </article>
+      </section>
+    </main>
+
+    <nav class="switcher" aria-label="Prototype variant switcher"><button id="previous" aria-label="Previous variant">‹</button><div class="switcher-label" id="switcher-label"></div><button id="next" aria-label="Next variant">›</button></nav>
+    <script>
+      const variants = [
+        { key: 'A', name: 'Compact reference' },
+        { key: 'B', name: 'Learning actions' },
+        { key: 'C', name: 'Progressive disclosure' },
+      ];
+      const label = document.getElementById('switcher-label');
+      const activeFromUrl = new URLSearchParams(location.search).get('variant');
+      let current = Math.max(0, variants.findIndex((variant) => variant.key === activeFromUrl));
+
+      function showVariant(index) {
+        current = (index + variants.length) % variants.length;
+        const variant = variants[current];
+        document.querySelectorAll('.variant').forEach((node) => node.classList.toggle('is-active', node.dataset.variant === variant.key));
+        label.innerHTML = variant.key + ' — ' + variant.name + '<small>Prototype only · changes the URL</small>';
+        const url = new URL(location.href);
+        url.searchParams.set('variant', variant.key);
+        history.replaceState({}, '', url);
+      }
+      document.getElementById('previous').addEventListener('click', () => showVariant(current - 1));
+      document.getElementById('next').addEventListener('click', () => showVariant(current + 1));
+      document.addEventListener('keydown', (event) => {
+        const target = event.target;
+        if (target.matches('input, textarea, [contenteditable]')) return;
+        if (event.key === 'ArrowLeft') showVariant(current - 1);
+        if (event.key === 'ArrowRight') showVariant(current + 1);
+      });
+      document.getElementById('examples-button').addEventListener('click', () => {
+        document.getElementById('reveal-bubble').classList.add('is-expanded');
+        document.getElementById('reveal-state').innerHTML = 'Current state: <b>expanded examples</b>';
+      });
+      document.getElementById('back-button').addEventListener('click', () => {
+        document.getElementById('reveal-bubble').classList.remove('is-expanded');
+        document.getElementById('reveal-state').innerHTML = 'Current state: <b>character overview</b>';
+      });
+      showVariant(current);
+    </script>
+  </body>
+</html>

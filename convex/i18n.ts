@@ -44,6 +44,7 @@ export interface UIStrings {
   }) => string;
   hanjaBreakdownNoData: string;
   hanjaExamplesHeader: string;
+  hanjaWordActionsHeader: string;
   aiTranslateFailed: string;
   aiTranslationNote: string;
 
@@ -111,6 +112,7 @@ const EN: UIStrings = {
   },
   hanjaBreakdownNoData: "<i>no data</i>",
   hanjaExamplesHeader: "Examples in Korean words",
+  hanjaWordActionsHeader: "Learn it in a word",
   aiTranslateFailed: "<i>(translation unavailable)</i>",
   aiTranslationNote: "<i>✨ Translated with AI</i>",
 
@@ -174,6 +176,7 @@ const RU: UIStrings = {
   },
   hanjaBreakdownNoData: "<i>нет данных</i>",
   hanjaExamplesHeader: "Примеры в корейских словах",
+  hanjaWordActionsHeader: "Изучите в слове",
   aiTranslateFailed: "<i>(перевод недоступен)</i>",
   aiTranslationNote: "<i>✨ Перевод с помощью ИИ</i>",
 

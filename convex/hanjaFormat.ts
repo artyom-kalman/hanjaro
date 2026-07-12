@@ -153,6 +153,35 @@ export function formatHanjaExamples(
   return lines.join("\n");
 }
 
+// Compact single-character card used for both the immediate reply and its
+// optional examples upgrade. Keep its footer handling here so the action
+// section always stays above the attribution.
+export function formatSingleHanjaCard(
+  doc: NonNullable<HanjaDoc>,
+  lang: Lang,
+  actionLabel?: string,
+): string {
+  const lines = [`<b>${escapeHtml(doc.character)}</b>`];
+  const readings: string[] = [];
+  if (doc.hangul) readings.push(escapeHtml(doc.hangul));
+  if (doc.mandarin) readings.push(escapeHtml(doc.mandarin));
+  if (readings.length > 0) lines.push(readings.join(" · "));
+
+  const meanings = pickHanjaMeanings(doc, lang);
+  const meaningText = meanings.map((meaning) => meaning.text).join(" · ");
+  lines.push(
+    meaningText
+      ? `<i>${escapeHtml(meaningText)}</i>`
+      : t(lang).hanjaBreakdownNoData,
+  );
+
+  if (actionLabel) {
+    lines.push("", `<b>${escapeHtml(actionLabel)}</b>`);
+  }
+
+  return appendHanjaAiFooter(lines.join("\n"), [doc], lang);
+}
+
 // Single AI-attribution footer line, language-aware.
 function aiFooter(lang: Lang): string {
   return `\n\n${t(lang).aiTranslationNote}`;

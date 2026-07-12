@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   formatHanjaExamples,
+  formatSingleHanjaCard,
   shouldShowAiFooter,
   type DisplayResult,
   type HanjaDoc,
@@ -96,5 +97,64 @@ describe("formatHanjaExamples", () => {
     ];
 
     expect(formatHanjaExamples(examples, "en")).toContain(" — 한집안.");
+  });
+});
+
+describe("formatSingleHanjaCard", () => {
+  test("renders a compact card with character, readings, and meanings", () => {
+    const doc = {
+      character: "學",
+      hangul: "학",
+      mandarin: "xué",
+      meanings: [
+        { text: "study", source: "unihan" },
+        { text: "learning", source: "unihan" },
+      ],
+    } as unknown as NonNullable<HanjaDoc>;
+
+    expect(formatSingleHanjaCard(doc, "en")).toBe(
+      "<b>學</b>\n학 · xué\n<i>study · learning</i>",
+    );
+  });
+
+  test("omits unavailable readings without leaving separators", () => {
+    const doc = {
+      character: "學",
+      hangul: "학",
+      mandarin: "",
+      meanings: [{ text: "study", source: "unihan" }],
+    } as unknown as NonNullable<HanjaDoc>;
+
+    expect(formatSingleHanjaCard(doc, "en")).toBe(
+      "<b>學</b>\n학\n<i>study</i>",
+    );
+  });
+
+  test("uses Russian meanings and keeps the action heading before one AI footer", () => {
+    const doc = {
+      character: "學",
+      hangul: "학",
+      mandarin: "xué",
+      meanings: [{ text: "study", source: "unihan" }],
+      translations: { ru: [{ text: "учёба" }] },
+    } as unknown as NonNullable<HanjaDoc>;
+
+    expect(formatSingleHanjaCard(doc, "ru", "Изучите в слове")).toBe(
+      "<b>學</b>\n학 · xué\n<i>учёба</i>\n\n" +
+        "<b>Изучите в слове</b>\n\n<i>✨ Перевод с помощью ИИ</i>",
+    );
+  });
+
+  test("uses the localized no-data fallback when meanings are absent", () => {
+    const doc = {
+      character: "學",
+      hangul: "학",
+      mandarin: "xué",
+      meanings: [],
+    } as unknown as NonNullable<HanjaDoc>;
+
+    expect(formatSingleHanjaCard(doc, "en")).toBe(
+      "<b>學</b>\n학 · xué\n<i>no data</i>",
+    );
   });
 });
