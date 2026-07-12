@@ -1,29 +1,29 @@
-import { execSync } from "child_process";
+import { execFileSync } from "node:child_process";
 
 const isProd = process.argv.includes("--prod");
-const convexFlag = isProd ? "--prod " : "";
+const convexFlag = isProd ? ["--prod"] : [];
 if (isProd) {
-  console.log("⚠  TARGETING PRODUCTION DEPLOYMENT");
+	console.log("⚠  TARGETING PRODUCTION DEPLOYMENT");
 } else {
-  console.log("Target deployment: dev");
+	console.log("Target deployment: dev");
 }
 
 type Meaning = { text: string; source: "unihan" | "override" };
 type RawEntry = {
-  unihanDefs?: string[];
-  hangul?: string;
-  korean?: string;
-  mandarin?: string;
+	unihanDefs?: string[];
+	hangul?: string;
+	korean?: string;
+	mandarin?: string;
 };
 type SeedEntry = {
-  character: string;
-  meanings: Meaning[];
-  hangul?: string;
-  korean?: string;
-  mandarin?: string;
+	character: string;
+	meanings: Meaning[];
+	hangul?: string;
+	korean?: string;
+	mandarin?: string;
 };
 type OverridesFile = {
-  overrides: Record<string, { meanings?: string[] }>;
+	overrides: Record<string, { meanings?: string[] }>;
 };
 
 // --- Load Unihan ---
@@ -32,32 +32,37 @@ const text = await Bun.file("data/Unihan_Readings.txt").text();
 const charData = new Map<string, RawEntry>();
 
 for (const line of text.split("\n")) {
-  if (!line.startsWith("U+")) continue;
-  const [codepoint, field, ...rest] = line.split("\t");
-  const value = rest.join("\t");
-  const char = String.fromCodePoint(parseInt(codepoint.slice(2), 16));
+	// Unihan data rows start with "U+"; skip file headers and blank lines.
+	if (!line.startsWith("U+")) continue;
+	const [codepoint, field, ...rest] = line.split("\t");
+	if (!codepoint || !field) continue;
+	const value = rest.join("\t");
+	const char = String.fromCodePoint(parseInt(codepoint.slice(2), 16));
 
-  if (!charData.has(char)) charData.set(char, {});
-  const entry = charData.get(char)!;
+	let entry = charData.get(char);
+	if (!entry) {
+		entry = {};
+		charData.set(char, entry);
+	}
 
-  switch (field) {
-    case "kDefinition":
-      // Keep ALL meanings, split on comma or semicolon, drop empties
-      entry.unihanDefs = value
-        .split(/[,;]/)
-        .map((s) => s.trim())
-        .filter((s) => s.length > 0);
-      break;
-    case "kHangul":
-      entry.hangul = value.split(":")[0];
-      break;
-    case "kKorean":
-      entry.korean = value;
-      break;
-    case "kMandarin":
-      entry.mandarin = value;
-      break;
-  }
+	switch (field) {
+		case "kDefinition":
+			// Keep ALL meanings, split on comma or semicolon, drop empties
+			entry.unihanDefs = value
+				.split(/[,;]/)
+				.map((s) => s.trim())
+				.filter((s) => s.length > 0);
+			break;
+		case "kHangul":
+			entry.hangul = value.split(":")[0];
+			break;
+		case "kKorean":
+			entry.korean = value;
+			break;
+		case "kMandarin":
+			entry.mandarin = value;
+			break;
+	}
 }
 
 // --- Load manual overrides ---
@@ -68,69 +73,80 @@ console.log(`Loaded ${Object.keys(overrides).length} override entries`);
 
 // --- Merge: every char that exists in Unihan OR overrides ---
 const allChars = new Set<string>([
-  ...charData.keys(),
-  ...Object.keys(overrides),
+	...charData.keys(),
+	...Object.keys(overrides),
 ]);
 
 const entries: SeedEntry[] = [];
 
 for (const character of allChars) {
-  const raw = charData.get(character) ?? {};
-  const override = overrides[character];
+	const raw = charData.get(character) ?? {};
+	const override = overrides[character];
 
-  const meanings: Meaning[] = [];
-  const seen = new Set<string>();
+	const meanings: Meaning[] = [];
+	const seen = new Set<string>();
 
-  // Overrides first, in file order
-  if (override?.meanings) {
-    for (const text of override.meanings) {
-      const trimmed = text.trim();
-      if (!trimmed) continue;
-      const key = trimmed.toLowerCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
-      meanings.push({ text: trimmed, source: "override" });
-    }
-  }
+	// Overrides first, in file order
+	if (override?.meanings) {
+		for (const text of override.meanings) {
+			const trimmed = text.trim();
+			if (!trimmed) continue;
+			const key = trimmed.toLowerCase();
+			if (seen.has(key)) continue;
+			seen.add(key);
+			meanings.push({ text: trimmed, source: "override" });
+		}
+	}
 
-  // Then Unihan, skipping duplicates (case-insensitive)
-  if (raw.unihanDefs) {
-    for (const text of raw.unihanDefs) {
-      const key = text.toLowerCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
-      meanings.push({ text, source: "unihan" });
-    }
-  }
+	// Then Unihan, skipping duplicates (case-insensitive)
+	if (raw.unihanDefs) {
+		for (const text of raw.unihanDefs) {
+			const key = text.toLowerCase();
+			if (seen.has(key)) continue;
+			seen.add(key);
+			meanings.push({ text, source: "unihan" });
+		}
+	}
 
-  if (meanings.length === 0) continue;
+	if (meanings.length === 0) continue;
 
-  entries.push({
-    character,
-    meanings,
-    ...(raw.hangul && { hangul: raw.hangul }),
-    ...(raw.korean && { korean: raw.korean }),
-    ...(raw.mandarin && { mandarin: raw.mandarin }),
-  });
+	entries.push({
+		character,
+		meanings,
+		...(raw.hangul && { hangul: raw.hangul }),
+		...(raw.korean && { korean: raw.korean }),
+		...(raw.mandarin && { mandarin: raw.mandarin }),
+	});
 }
 
 console.log(`Prepared ${entries.length} characters with meanings`);
 
 // --- Wipe existing hanja table before reseed (schema changed) ---
 console.log("Clearing existing hanja table...");
-execSync(`bunx convex run ${convexFlag}hanja:clearAll '{}'`, { stdio: "inherit" });
+execFileSync("bunx", ["convex", "run", ...convexFlag, "hanja:clearAll", "{}"], {
+	stdio: "inherit",
+});
 
 // --- Seed in batches ---
-// Keep BATCH_SIZE small: JSON is passed as a shell argument and Linux's
+// Keep BATCH_SIZE small: JSON is passed as a command argument and Linux's
 // argv limit (~128KB) will kill the process on dense batches at 500.
 const BATCH_SIZE = 100;
 for (let i = 0; i < entries.length; i += BATCH_SIZE) {
-  const batch = entries.slice(i, i + BATCH_SIZE);
-  execSync(
-    `bunx convex run ${convexFlag}hanja:seedBatch '${JSON.stringify({ entries: batch }).replace(/'/g, "'\\''")}'`,
-    { stdio: "inherit" }
-  );
-  console.log(`Seeded ${Math.min(i + BATCH_SIZE, entries.length)} / ${entries.length}`);
+	const batch = entries.slice(i, i + BATCH_SIZE);
+	execFileSync(
+		"bunx",
+		[
+			"convex",
+			"run",
+			...convexFlag,
+			"hanja:seedBatch",
+			JSON.stringify({ entries: batch }),
+		],
+		{ stdio: "inherit" },
+	);
+	console.log(
+		`Seeded ${Math.min(i + BATCH_SIZE, entries.length)} / ${entries.length}`,
+	);
 }
 
 console.log("Done!");

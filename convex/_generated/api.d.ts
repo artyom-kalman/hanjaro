@@ -8,6 +8,11 @@
  * @module
  */
 
+import type {
+	ApiFromModules,
+	FilterApi,
+	FunctionReference,
+} from "convex/server";
 import type * as hanja from "../hanja.js";
 import type * as hanjaFormat from "../hanjaFormat.js";
 import type * as http from "../http.js";
@@ -20,24 +25,18 @@ import type * as userSettings from "../userSettings.js";
 import type * as wordPrompt from "../wordPrompt.js";
 import type * as words from "../words.js";
 
-import type {
-  ApiFromModules,
-  FilterApi,
-  FunctionReference,
-} from "convex/server";
-
 declare const fullApi: ApiFromModules<{
-  hanja: typeof hanja;
-  hanjaFormat: typeof hanjaFormat;
-  http: typeof http;
-  i18n: typeof i18n;
-  krdict: typeof krdict;
-  registerWebhook: typeof registerWebhook;
-  telegram: typeof telegram;
-  translate: typeof translate;
-  userSettings: typeof userSettings;
-  wordPrompt: typeof wordPrompt;
-  words: typeof words;
+	hanja: typeof hanja;
+	hanjaFormat: typeof hanjaFormat;
+	http: typeof http;
+	i18n: typeof i18n;
+	krdict: typeof krdict;
+	registerWebhook: typeof registerWebhook;
+	telegram: typeof telegram;
+	translate: typeof translate;
+	userSettings: typeof userSettings;
+	wordPrompt: typeof wordPrompt;
+	words: typeof words;
 }>;
 
 /**
@@ -49,8 +48,8 @@ declare const fullApi: ApiFromModules<{
  * ```
  */
 export declare const api: FilterApi<
-  typeof fullApi,
-  FunctionReference<any, "public">
+	typeof fullApi,
+	FunctionReference<any, "public">
 >;
 
 /**
@@ -62,8 +61,8 @@ export declare const api: FilterApi<
  * ```
  */
 export declare const internal: FilterApi<
-  typeof fullApi,
-  FunctionReference<any, "internal">
+	typeof fullApi,
+	FunctionReference<any, "internal">
 >;
 
 export declare const components: {};
