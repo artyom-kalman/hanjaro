@@ -1,7 +1,7 @@
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 
 const isProd = process.argv.includes("--prod");
-const convexFlag = isProd ? "--prod " : "";
+const convexFlag = isProd ? ["--prod"] : [];
 if (isProd) {
 	console.log("⚠  TARGETING PRODUCTION DEPLOYMENT");
 } else {
@@ -123,18 +123,25 @@ console.log(`Prepared ${entries.length} characters with meanings`);
 
 // --- Wipe existing hanja table before reseed (schema changed) ---
 console.log("Clearing existing hanja table...");
-execSync(`bunx convex run ${convexFlag}hanja:clearAll '{}'`, {
+execFileSync("bunx", ["convex", "run", ...convexFlag, "hanja:clearAll", "{}"], {
 	stdio: "inherit",
 });
 
 // --- Seed in batches ---
-// Keep BATCH_SIZE small: JSON is passed as a shell argument and Linux's
+// Keep BATCH_SIZE small: JSON is passed as a command argument and Linux's
 // argv limit (~128KB) will kill the process on dense batches at 500.
 const BATCH_SIZE = 100;
 for (let i = 0; i < entries.length; i += BATCH_SIZE) {
 	const batch = entries.slice(i, i + BATCH_SIZE);
-	execSync(
-		`bunx convex run ${convexFlag}hanja:seedBatch '${JSON.stringify({ entries: batch }).replace(/'/g, "'\\''")}'`,
+	execFileSync(
+		"bunx",
+		[
+			"convex",
+			"run",
+			...convexFlag,
+			"hanja:seedBatch",
+			JSON.stringify({ entries: batch }),
+		],
 		{ stdio: "inherit" },
 	);
 	console.log(

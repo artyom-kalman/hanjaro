@@ -49,6 +49,13 @@ describe("shouldShowAiFooter", () => {
 		expect(shouldShowAiFooter([], result, "en")).toBe(true);
 	});
 
+	test("true when the rendered fallback word translation is AI", () => {
+		const result = wordResult({
+			en: { transWord: "newspaper", transDfn: "a publication", source: "ai" },
+		});
+		expect(shouldShowAiFooter([], result, "ru")).toBe(true);
+	});
+
 	test("false for KrDict-only translations", () => {
 		const result = wordResult({
 			ru: { transWord: "газета", transDfn: "издание", source: "krdict" },

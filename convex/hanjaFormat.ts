@@ -205,7 +205,7 @@ export function shouldShowAiFooter(
 ): boolean {
 	return (
 		hanjaGlossesAreAi(hanjaDocs, lang) ||
-		result.translations?.[lang]?.source === "ai"
+		pickTranslation(result, lang)?.translation.source === "ai"
 	);
 }
 

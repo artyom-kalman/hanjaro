@@ -454,14 +454,34 @@ export const scheduledTranslateAndEdit = internalAction({
 		let charResult = { translatedCount: 0 };
 		let wordResult = { translated: false };
 		let defResult = { translated: false };
-		try {
-			[charResult, wordResult, defResult] = await Promise.all([
-				charPromise,
-				wordPromise,
-				defPromise,
-			]);
-		} catch (err) {
-			console.error("scheduledTranslateAndEdit: translation failed", err);
+		const [charOutcome, wordOutcome, defOutcome] = await Promise.allSettled([
+			charPromise,
+			wordPromise,
+			defPromise,
+		]);
+		if (charOutcome.status === "fulfilled") {
+			charResult = charOutcome.value;
+		} else {
+			console.error(
+				"scheduledTranslateAndEdit: translation failed",
+				charOutcome.reason,
+			);
+		}
+		if (wordOutcome.status === "fulfilled") {
+			wordResult = wordOutcome.value;
+		} else {
+			console.error(
+				"scheduledTranslateAndEdit: translation failed",
+				wordOutcome.reason,
+			);
+		}
+		if (defOutcome.status === "fulfilled") {
+			defResult = defOutcome.value;
+		} else {
+			console.error(
+				"scheduledTranslateAndEdit: translation failed",
+				defOutcome.reason,
+			);
 		}
 		const producedSomething =
 			charResult.translatedCount > 0 ||
