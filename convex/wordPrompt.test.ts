@@ -1,8 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import {
+	buildCharGlossPrompt,
 	buildDefinitionPrompt,
 	buildGlossFromDescriptionPrompt,
 	buildWordPrompt,
+	type CharInput,
+	type ExampleWord,
+	parseCharGlossResponse,
 	parseDefinitionResponse,
 	parseWordResponse,
 } from "./wordPrompt.js";
@@ -277,5 +281,158 @@ describe("parseDefinitionResponse", () => {
 		expect(parseDefinitionResponse('{"definition":"   "}')).toBeNull();
 		expect(parseDefinitionResponse("not json")).toBeNull();
 		expect(parseDefinitionResponse("null")).toBeNull();
+	});
+});
+
+describe("buildCharGlossPrompt", () => {
+	const header = [
+		"Translate Korean Hanja (Chinese character) glosses from English to Russian.",
+		"For each character, translate each English meaning into a single concise Russian word",
+		"or short phrase, dictionary-style. Keep the same number of glosses per character.",
+		"When example words are provided, use them to ground the meaning — the Russian gloss",
+		"should be consistent with how the character is used in those words.",
+		"",
+		"Characters:",
+	].join("\n");
+	const footer = [
+		"Return strict JSON only, no preamble. Keys are the characters above,",
+		"values are arrays of Russian glosses. Example shape:",
+		'{"正":["правильный","надлежащий","верный"]}',
+	].join("\n");
+
+	test("renders full prompt with hangul/mandarin context and example words", () => {
+		const chars: CharInput[] = [
+			{
+				character: "正",
+				hangul: "정",
+				mandarin: "zhèng",
+				englishMeanings: ["correct", "proper"],
+			},
+		];
+		const examples = new Map<string, ExampleWord[]>([
+			["正", [{ word: "正直", transWord: "честность" }]],
+		]);
+		expect(buildCharGlossPrompt(chars, examples)).toBe(
+			`${header}\n- 正 (Korean: 정, Pinyin: zhèng): correct, proper\n  Example words: 正直 = честность\n\n${footer}`,
+		);
+	});
+
+	test("omits the context parenthetical and example line when absent", () => {
+		const chars: CharInput[] = [
+			{ character: "山", englishMeanings: ["mountain"] },
+		];
+		expect(buildCharGlossPrompt(chars, new Map())).toBe(
+			`${header}\n- 山: mountain\n\n${footer}`,
+		);
+	});
+
+	test("includes only Korean context when mandarin is missing", () => {
+		const chars: CharInput[] = [
+			{ character: "水", hangul: "수", englishMeanings: ["water"] },
+		];
+		const prompt = buildCharGlossPrompt(chars, new Map());
+		expect(prompt).toContain("- 水 (Korean: 수): water");
+		expect(prompt).not.toContain("Pinyin");
+	});
+
+	test("includes only Pinyin context when hangul is missing", () => {
+		const chars: CharInput[] = [
+			{ character: "火", mandarin: "huǒ", englishMeanings: ["fire"] },
+		];
+		const prompt = buildCharGlossPrompt(chars, new Map());
+		expect(prompt).toContain("- 火 (Pinyin: huǒ): fire");
+		expect(prompt).not.toContain("Korean:");
+	});
+
+	test("joins multiple example words with commas", () => {
+		const chars: CharInput[] = [
+			{ character: "水", englishMeanings: ["water"] },
+		];
+		const examples = new Map<string, ExampleWord[]>([
+			[
+				"水",
+				[
+					{ word: "水泳", transWord: "плавание" },
+					{ word: "水分", transWord: "влага" },
+				],
+			],
+		]);
+		expect(buildCharGlossPrompt(chars, examples)).toContain(
+			"  Example words: 水泳 = плавание, 水分 = влага",
+		);
+	});
+});
+
+describe("parseCharGlossResponse", () => {
+	const chars: CharInput[] = [
+		{ character: "正", englishMeanings: ["correct"] },
+		{ character: "直", englishMeanings: ["straight"] },
+	];
+
+	test("parses glosses keyed by character (happy path)", () => {
+		const result = parseCharGlossResponse(
+			'{"正":["правильный","верный"],"直":["прямой"]}',
+			chars,
+		);
+		expect(result).not.toBeNull();
+		expect(result).toEqual(
+			new Map([
+				["正", ["правильный", "верный"]],
+				["直", ["прямой"]],
+			]),
+		);
+	});
+
+	test("strips ```json fences", () => {
+		const result = parseCharGlossResponse(
+			'```json\n{"正":["правильный"]}\n```',
+			chars,
+		);
+		expect(result).toEqual(new Map([["正", ["правильный"]]]));
+	});
+
+	test("skips characters missing from the reply", () => {
+		const result = parseCharGlossResponse('{"正":["правильный"]}', chars);
+		expect(result).toEqual(new Map([["正", ["правильный"]]]));
+		expect(result?.has("直")).toBe(false);
+	});
+
+	test("skips a character whose value is not an array", () => {
+		const result = parseCharGlossResponse(
+			'{"正":"правильный","直":["прямой"]}',
+			chars,
+		);
+		expect(result).toEqual(new Map([["直", ["прямой"]]]));
+	});
+
+	test("filters out non-string glosses and drops the char if none remain", () => {
+		const result = parseCharGlossResponse(
+			'{"正":[1,null,"верный"],"直":[42,true]}',
+			chars,
+		);
+		expect(result).toEqual(new Map([["正", ["верный"]]]));
+	});
+
+	test("trims whitespace and drops empty glosses", () => {
+		const result = parseCharGlossResponse(
+			'{"正":["  правильный  ","   ",""],"直":["прямой"]}',
+			chars,
+		);
+		expect(result).toEqual(
+			new Map([
+				["正", ["правильный"]],
+				["直", ["прямой"]],
+			]),
+		);
+	});
+
+	test("returns null on malformed JSON", () => {
+		expect(parseCharGlossResponse("not json at all", chars)).toBeNull();
+		expect(parseCharGlossResponse('{"正": ', chars)).toBeNull();
+	});
+
+	test("returns null on a non-object payload", () => {
+		expect(parseCharGlossResponse('"just a string"', chars)).toBeNull();
+		expect(parseCharGlossResponse("null", chars)).toBeNull();
 	});
 });

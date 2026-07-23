@@ -4,16 +4,21 @@ import OpenAI from "openai";
 import { internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { internalAction } from "./_generated/server.js";
-import {
-	type DisplayResult,
-	formatWordResult,
-	hasMissingRuTranslation,
-} from "./hanjaFormat.js";
+import { hanjaOnly, toHanjaContext } from "./chars.js";
+import { type DisplayResult, formatWordResult } from "./hanjaFormat.js";
 import { t } from "./i18n.js";
 import {
+	anyTranslationNeeded,
+	computeTranslationNeeds,
+} from "./translationNeeds.js";
+import {
+	buildCharGlossPrompt,
 	buildDefinitionPrompt,
 	buildGlossFromDescriptionPrompt,
 	buildWordPrompt,
+	type CharInput as CharGlossInput,
+	type ExampleWord,
+	parseCharGlossResponse,
 	parseDefinitionResponse,
 	parseWordResponse,
 } from "./wordPrompt.js";
@@ -31,73 +36,12 @@ const DEFAULT_MODEL = "google/gemini-3.1-flash-lite";
 const TIMEOUT_MS = 12000;
 const MAX_RETRIES = 2;
 
-type CharInput = {
-	id: Id<"hanja">;
-	character: string;
-	hangul?: string;
-	mandarin?: string;
-	englishMeanings: string[];
-};
-
-type ExampleWord = { word: string; transWord: string };
+// Carries the Convex Hanja id alongside the prompt-side char fields, which live
+// in wordPrompt.ts (kept Convex-free). buildCharGlossPrompt only reads the shared
+// fields; the id is used when saving translations back.
+type CharInput = CharGlossInput & { id: Id<"hanja"> };
 
 const EXAMPLES_PER_CHAR = 3;
-
-function buildPrompt(
-	chars: CharInput[],
-	examplesByChar: Map<string, ExampleWord[]>,
-): string {
-	const lines: string[] = [
-		"Translate Korean Hanja (Chinese character) glosses from English to Russian.",
-		"For each character, translate each English meaning into a single concise Russian word",
-		"or short phrase, dictionary-style. Keep the same number of glosses per character.",
-		"When example words are provided, use them to ground the meaning — the Russian gloss",
-		"should be consistent with how the character is used in those words.",
-		"",
-		"Characters:",
-	];
-	for (const c of chars) {
-		const ctx: string[] = [];
-		if (c.hangul) ctx.push(`Korean: ${c.hangul}`);
-		if (c.mandarin) ctx.push(`Pinyin: ${c.mandarin}`);
-		const ctxPart = ctx.length > 0 ? ` (${ctx.join(", ")})` : "";
-		lines.push(`- ${c.character}${ctxPart}: ${c.englishMeanings.join(", ")}`);
-		const examples = examplesByChar.get(c.character) ?? [];
-		if (examples.length > 0) {
-			const exStr = examples
-				.map((e) => `${e.word} = ${e.transWord}`)
-				.join(", ");
-			lines.push(`  Example words: ${exStr}`);
-		}
-	}
-	lines.push("");
-	lines.push(
-		"Return strict JSON only, no preamble. Keys are the characters above,",
-	);
-	lines.push("values are arrays of Russian glosses. Example shape:");
-	lines.push('{"正":["правильный","надлежащий","верный"]}');
-	return lines.join("\n");
-}
-
-function parseResponse(raw: string, chars: CharInput[]): Map<string, string[]> {
-	const trimmed = raw.trim();
-	// Some models wrap JSON in ```json fences; strip them.
-	const stripped = trimmed
-		.replace(/^```(?:json)?\s*/i, "")
-		.replace(/\s*```$/i, "");
-	const parsed = JSON.parse(stripped) as Record<string, unknown>;
-	const result = new Map<string, string[]>();
-	for (const c of chars) {
-		const value = parsed[c.character];
-		if (!Array.isArray(value)) continue;
-		const glosses = value
-			.filter((g): g is string => typeof g === "string")
-			.map((g) => g.trim())
-			.filter((g) => g.length > 0);
-		if (glosses.length > 0) result.set(c.character, glosses);
-	}
-	return result;
-}
 
 // Single OpenRouter JSON-mode chat completion. Centralizes client setup, the
 // timeout/retry config, and content extraction (some OpenRouter-hosted models
@@ -198,14 +142,14 @@ export const translateHanjaToRu = internalAction({
 			examplesByChar.set(e.character, e.examples);
 		}
 
-		const raw = await callOpenRouterJson(buildPrompt(targets, examplesByChar));
+		const raw = await callOpenRouterJson(
+			buildCharGlossPrompt(targets, examplesByChar),
+		);
 		if (!raw) return { translatedCount: 0 };
 
-		let parsed: Map<string, string[]>;
-		try {
-			parsed = parseResponse(raw, targets);
-		} catch (err) {
-			console.error("translate: malformed JSON from model", err, raw);
+		const parsed = parseCharGlossResponse(raw, targets);
+		if (!parsed) {
+			console.error("translate: malformed JSON from model", raw);
 			return { translatedCount: 0 };
 		}
 
@@ -383,9 +327,7 @@ export const scheduledTranslateAndEdit = internalAction({
 			return;
 		}
 
-		const chars = [...word.origin].filter(
-			(c) => c >= "\u4E00" && c <= "\u9FFF",
-		);
+		const chars = hanjaOnly(word.origin);
 		const hanjaDocs =
 			chars.length > 0
 				? await ctx.runQuery(internal.hanja.getByCharacters, {
@@ -395,25 +337,20 @@ export const scheduledTranslateAndEdit = internalAction({
 		const presentHanja = hanjaDocs.filter(
 			(d): d is NonNullable<typeof d> => d !== null,
 		);
+		const hanjaContext = toHanjaContext(presentHanja);
 
-		// Char glosses only ever AI-translate for Russian (English is native
-		// Unihan). The word call runs for whichever language KrDict left empty.
-		const missingHanja =
-			lang === "ru" ? presentHanja.filter(hasMissingRuTranslation) : [];
-		const wordNeedsTranslation = !word.translations[lang]?.transWord;
+		// The shared schedule/translate decision (translationNeeds.ts) — the same
+		// rules the webhook uses to decide whether to schedule this action at all.
+		const needs = computeTranslationNeeds(word, hanjaDocs, lang);
+		const attempted = anyTranslationNeeded(needs);
+		// Still needed as call args (not for the decision): the transDfn passed to
+		// translateWordToLang and the defPromise meaning fallback.
 		const existingTransDfn = word.translations[lang]?.transDfn ?? "";
-		// Prompt A (case 1: gloss missing AND no description) already emits a Korean
-		// definition, so only run the standalone definition call when case 1 won't.
-		const case1MakesDefinition =
-			wordNeedsTranslation && !word.definition && !existingTransDfn;
-		const definitionNeeded = !word.definition && !case1MakesDefinition;
-		const attempted =
-			missingHanja.length > 0 || wordNeedsTranslation || definitionNeeded;
 
 		const charPromise =
-			missingHanja.length > 0
+			needs.missingRuHanja.length > 0
 				? ctx.runAction(internal.translate.translateHanjaToRu, {
-						docs: missingHanja.map((d) => ({
+						docs: needs.missingRuHanja.map((d) => ({
 							id: d._id,
 							character: d.character,
 							hangul: d.hangul,
@@ -422,7 +359,7 @@ export const scheduledTranslateAndEdit = internalAction({
 						})),
 					})
 				: Promise.resolve({ translatedCount: 0 });
-		const wordPromise = wordNeedsTranslation
+		const wordPromise = needs.wordNeedsTranslation
 			? ctx.runAction(internal.translate.translateWordToLang, {
 					targetCode,
 					lang,
@@ -431,23 +368,17 @@ export const scheduledTranslateAndEdit = internalAction({
 					pos: word.pos,
 					definition: word.definition,
 					transDfn: existingTransDfn,
-					hanjaContext: presentHanja.map((d) => ({
-						character: d.character,
-						englishMeanings: d.meanings.map((m) => m.text),
-					})),
+					hanjaContext,
 				})
 			: Promise.resolve({ translated: false });
-		const defPromise = definitionNeeded
+		const defPromise = needs.definitionNeeded
 			? ctx.runAction(internal.translate.translateWordDefinition, {
 					targetCode,
 					lang,
 					word: word.word,
 					pos: word.pos,
 					meaning: word.translations[lang]?.transWord || existingTransDfn,
-					hanjaContext: presentHanja.map((d) => ({
-						character: d.character,
-						englishMeanings: d.meanings.map((m) => m.text),
-					})),
+					hanjaContext,
 				})
 			: Promise.resolve({ translated: false });
 

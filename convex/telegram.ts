@@ -1,171 +1,78 @@
-import { Bot, type Context, InlineKeyboard, webhookCallback } from "grammy";
+import { Bot, webhookCallback } from "grammy";
 import { internal } from "./_generated/api.js";
-import { httpAction } from "./_generated/server.js";
-import {
-	type DisplayResult,
-	formatHangulHanjaPage,
-	formatSingleHanjaCard,
-	formatWordResult,
-	type HanjaDoc,
-	hasMissingRuTranslation,
-	pickResultMeaning,
-	pickTranslation,
-} from "./hanjaFormat.js";
+import { type ActionCtx, httpAction } from "./_generated/server.js";
+import { allHanja, isHangul, isHanja } from "./chars.js";
+import type { DisplayResult, HanjaDoc } from "./hanjaFormat.js";
 import { type Lang, t } from "./i18n.js";
 import {
-	type KrdictSearchResult,
-	searchHanjaExamples,
-	searchWord,
-} from "./krdict.js";
+	buildLangInitKeyboard,
+	buildSettingsKeyboard,
+	buildSyllableChoiceKeyboard,
+} from "./keyboards.js";
+import { searchHanjaExamples, searchWord } from "./krdict.js";
+import {
+	formatResultWithHanja,
+	handleHangulHanjaList,
+	handleSingleHanja,
+	handleWordLookup,
+	krdictToDisplay,
+	type LookupDeps,
+	runWordLookup,
+	type SentMessage,
+} from "./lookup.js";
+import {
+	anyTranslationNeeded,
+	computeTranslationNeeds,
+} from "./translationNeeds.js";
 
-type LoadingMsg = { chat: { id: number }; message_id: number } | null;
-
-const HANJA_WORD_ACTION_LIMIT = 3;
-const HANJA_WORD_ACTION_LABEL_LIMIT = 60;
-
-function findExactMatches<T extends { word: string }>(
-	results: T[],
-	query: string,
-): { exact: T[]; suggestions: T[] } {
-	const exact = results.filter((r) => r.word === query);
-	const suggestions = exact.length === 0 ? results.slice(0, 5) : [];
-	return { exact, suggestions };
+async function getUserLang(
+	actionCtx: ActionCtx,
+	userId: number | undefined,
+): Promise<Lang> {
+	if (userId === undefined) return "en";
+	const settings = await actionCtx.runQuery(
+		internal.userSettings.getByTelegramUserId,
+		{ telegramUserId: userId },
+	);
+	return (settings?.lang as Lang | undefined) ?? "en";
 }
 
-function hanjaOnly(origin: string): string[] {
-	return [...origin].filter((c) => c >= "\u4E00" && c <= "\u9FFF");
+function pickPromptLang(code: string | undefined): Lang {
+	return code?.toLowerCase().startsWith("ru") ? "ru" : "en";
 }
 
-function isHangul(c: string): boolean {
-	return c >= "\uAC00" && c <= "\uD7AF";
-}
+const HANJA_EXAMPLES_TIMEOUT_MS = 5000;
 
-function isHanja(c: string): boolean {
-	return c >= "\u4E00" && c <= "\u9FFF";
-}
+// Schedules the background orchestrator that edits the result message in place
+// once AI translations are ready. No status message — the user sees the
+// immediate result, and the same message upgrades when the LLM responds (or
+// gains a small failure note on timeout/error). Whether anything is actually
+// worth scheduling is the shared decision in translationNeeds.ts, so this never
+// diverges from what the orchestrator will do: schedule only when a Hanja gloss
+// (RU only), the word translation, or a standalone definition is genuinely
+// needed — notably NOT when the sole apparent gap is a definition that Prompt A
+// (case 1) would emit anyway. Re-derives everything from targetCode, so the
+// scheduled args stay tiny.
+async function scheduleTranslationUpgrade(
+	actionCtx: ActionCtx,
+	resultMsg: SentMessage,
+	result: DisplayResult,
+	docs: HanjaDoc[],
+	lang: Lang,
+): Promise<void> {
+	const needs = computeTranslationNeeds(result, docs, lang);
+	if (!anyTranslationNeeded(needs)) return;
 
-function allHanja(s: string): boolean {
-	const chars = [...s];
-	return chars.length > 0 && chars.every(isHanja);
-}
-
-const HANGUL_PAGE_SIZE = 8;
-
-function startSpinner(
-	api: Bot["api"],
-	chatId: number,
-	messageId: number,
-	frames: readonly string[],
-): { stop: () => void } {
-	if (frames.length === 0) return { stop: () => {} };
-
-	let i = 0;
-	const spinInterval = setInterval(() => {
-		i = (i + 1) % frames.length;
-		const frame = frames[i];
-		if (frame) api.editMessageText(chatId, messageId, frame).catch(() => {});
-	}, 700);
-	api.sendChatAction(chatId, "typing").catch(() => {});
-	const typingInterval = setInterval(() => {
-		api.sendChatAction(chatId, "typing").catch(() => {});
-	}, 3000);
-	return {
-		stop: () => {
-			clearInterval(spinInterval);
-			clearInterval(typingInterval);
+	await actionCtx.scheduler.runAfter(
+		0,
+		internal.translate.scheduledTranslateAndEdit,
+		{
+			chatId: resultMsg.chat.id,
+			messageId: resultMsg.message_id,
+			targetCode: result.targetCode,
+			lang,
 		},
-	};
-}
-
-type SentMessage = { chat: { id: number }; message_id: number };
-
-async function sendOrEdit(
-	ctx: {
-		reply: (text: string, opts?: object) => Promise<SentMessage>;
-		api: Bot["api"];
-	},
-	loadingMsg: LoadingMsg,
-	text: string,
-	opts?: Record<string, unknown>,
-): Promise<SentMessage> {
-	if (loadingMsg) {
-		await ctx.api.editMessageText(
-			loadingMsg.chat.id,
-			loadingMsg.message_id,
-			text,
-			opts,
-		);
-		return loadingMsg;
-	}
-	return ctx.reply(text, opts);
-}
-
-function buildHangulHanjaKeyboard(
-	syllable: string,
-	page: number,
-	totalPages: number,
-	lang: Lang,
-): InlineKeyboard {
-	const keyboard = new InlineKeyboard();
-	if (totalPages > 1) {
-		if (page > 0)
-			keyboard.text(t(lang).buttons.prev, `hp:${syllable}:${page - 1}`);
-		if (page < totalPages - 1)
-			keyboard.text(t(lang).buttons.next, `hp:${syllable}:${page + 1}`);
-	}
-	return keyboard;
-}
-
-function buildSyllableChoiceKeyboard(
-	syllable: string,
-	lang: Lang,
-): InlineKeyboard {
-	const ui = t(lang);
-	return new InlineKeyboard()
-		.text(ui.buttons.lookUpWord, `wq:${syllable}`)
-		.text(ui.buttons.hanjaFor(syllable), `hh:${syllable}:0`);
-}
-
-function buildMeaningKeyboard(
-	matches: DisplayResult[],
-	lang: Lang,
-): InlineKeyboard {
-	const keyboard = new InlineKeyboard();
-	for (const m of matches) {
-		const origin = m.origin || "—";
-		const picked = pickTranslation(m, lang);
-		const meaning = picked?.translation.transWord || m.definition || "";
-		let label = meaning ? `${origin} · ${meaning}` : origin;
-		if (label.length > 60) label = `${label.slice(0, 59)}…`;
-		keyboard.text(label, `m:${m.targetCode}`).row();
-	}
-	return keyboard;
-}
-
-function buildHanjaWordKeyboard(
-	examples: DisplayResult[],
-	lang: Lang,
-): InlineKeyboard {
-	const keyboard = new InlineKeyboard();
-
-	for (const example of examples.slice(0, HANJA_WORD_ACTION_LIMIT)) {
-		const meaning = pickResultMeaning(example, lang);
-		let label = meaning ? `${example.word} · ${meaning}` : example.word;
-
-		if (label.length > HANJA_WORD_ACTION_LABEL_LIMIT) {
-			label = `${label.slice(0, HANJA_WORD_ACTION_LABEL_LIMIT - 1)}…`;
-		}
-
-		keyboard.text(label, `wq:${example.word}`).row();
-	}
-
-	return keyboard;
-}
-
-function buildSettingsKeyboard(): InlineKeyboard {
-	return new InlineKeyboard()
-		.text("🇬🇧 English", "lang:en")
-		.text("🇷🇺 Русский", "lang:ru");
+	);
 }
 
 export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
@@ -176,66 +83,6 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
 	}
 	const krdictApiKey = apiKey;
 	const bot = new Bot(token);
-
-	async function lookupHanja(origin: string): Promise<HanjaDoc[]> {
-		if (!origin) return [];
-		return actionCtx.runQuery(internal.hanja.getByCharacters, {
-			characters: [...origin],
-		});
-	}
-
-	async function lookupHanjaByHangul(
-		syllable: string,
-	): Promise<NonNullable<HanjaDoc>[]> {
-		return actionCtx.runQuery(internal.hanja.getByHangul, { hangul: syllable });
-	}
-
-	async function getUserLang(userId: number | undefined): Promise<Lang> {
-		if (userId === undefined) return "en";
-		const settings = await actionCtx.runQuery(
-			internal.userSettings.getByTelegramUserId,
-			{ telegramUserId: userId },
-		);
-		return (settings?.lang as Lang | undefined) ?? "en";
-	}
-
-	function pickPromptLang(code: string | undefined): Lang {
-		return code?.toLowerCase().startsWith("ru") ? "ru" : "en";
-	}
-
-	async function getCached(word: string): Promise<DisplayResult[]> {
-		return actionCtx.runQuery(internal.words.getAllByWord, { word });
-	}
-
-	function krdictToDisplay(r: KrdictSearchResult, lang: Lang): DisplayResult {
-		return {
-			word: r.word,
-			origin: r.origin,
-			targetCode: r.targetCode,
-			pos: r.pos,
-			definition: r.definition,
-			translations: {
-				[lang]: { transWord: r.transWord, transDfn: r.transDfn },
-			},
-		};
-	}
-
-	async function searchFromApi(
-		word: string,
-		lang: Lang,
-	): Promise<DisplayResult[]> {
-		const results = await searchWord(krdictApiKey, word, lang);
-		const { exact } = findExactMatches(results, word);
-		if (exact.length > 0) {
-			await actionCtx.runMutation(internal.words.saveMany, {
-				entries: exact,
-				lang,
-			});
-		}
-		return results.map((r) => krdictToDisplay(r, lang));
-	}
-
-	const HANJA_EXAMPLES_TIMEOUT_MS = 5000;
 
 	async function lookupHanjaExamples(
 		character: string,
@@ -267,233 +114,24 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
 		}
 	}
 
-	function cachedHasLang(docs: DisplayResult[], lang: Lang): boolean {
-		return docs.some((d) => d.translations?.[lang] !== undefined);
-	}
-
-	async function resolveWord(
-		word: string,
-		sendLoading: () => Promise<NonNullable<LoadingMsg>>,
-		api: Bot["api"],
-		lang: Lang,
-	): Promise<{ results: DisplayResult[]; loadingMsg: LoadingMsg }> {
-		const cached = await getCached(word);
-		if (cached.length > 0 && cachedHasLang(cached, lang)) {
-			return { results: cached, loadingMsg: null };
-		}
-
-		const loadingMsg = await sendLoading();
-		const spinner = startSpinner(
-			api,
-			loadingMsg.chat.id,
-			loadingMsg.message_id,
-			t(lang).loadingFrames,
-		);
-		try {
-			const apiResults = await searchFromApi(word, lang);
-			// Prefer refreshed cache (merged translations) for exact matches
-			const refreshed = await getCached(word);
-			const { exact: refreshedExact } = findExactMatches(refreshed, word);
-			if (refreshedExact.length > 0) {
-				return { results: refreshed, loadingMsg };
-			}
-			return { results: apiResults, loadingMsg };
-		} finally {
-			spinner.stop();
-		}
-	}
-
-	async function formatResultWithHanja(
-		result: DisplayResult,
-		lang: Lang,
-	): Promise<{ message: string; docs: HanjaDoc[]; chars: string[] }> {
-		const chars = result.origin ? hanjaOnly(result.origin) : [];
-		let docs: HanjaDoc[] = [];
-		if (chars.length > 0) {
-			docs = await lookupHanja(chars.join(""));
-		}
-		const message = formatWordResult(result, docs, chars, lang);
-		return { message, docs, chars };
-	}
-
-	// Schedules the background orchestrator that edits the result message in
-	// place once AI translations are ready. No status message — the user sees the
-	// immediate result, and the same message upgrades when the LLM responds (or
-	// gains a small failure note on timeout/error). Fires when the word is missing
-	// its `transWord` in `lang` (en or ru), or — for RU only — when a Hanja char
-	// is missing its Russian gloss. Re-derives everything from targetCode, so the
-	// scheduled args stay tiny.
-	async function scheduleTranslationUpgrade(
-		resultMsg: SentMessage,
-		result: DisplayResult,
-		docs: HanjaDoc[],
-		lang: Lang,
-	): Promise<void> {
-		const present = docs.filter((d): d is NonNullable<HanjaDoc> => d !== null);
-		const hanjaNeedsRu = lang === "ru" && present.some(hasMissingRuTranslation);
-		const wordNeedsTranslation = !result.translations?.[lang]?.transWord;
-		const definitionNeeded = !result.definition;
-		if (!hanjaNeedsRu && !wordNeedsTranslation && !definitionNeeded) return;
-
-		await actionCtx.scheduler.runAfter(
-			0,
-			internal.translate.scheduledTranslateAndEdit,
-			{
-				chatId: resultMsg.chat.id,
-				messageId: resultMsg.message_id,
-				targetCode: result.targetCode,
-				lang,
-			},
-		);
-	}
-
-	async function handleWordLookup(
-		ctx: Context,
-		word: string,
-		sendLoading: () => Promise<NonNullable<LoadingMsg>>,
-		lang: Lang,
-	): Promise<void> {
-		const { results, loadingMsg } = await resolveWord(
-			word,
-			sendLoading,
-			ctx.api,
-			lang,
-		);
-
-		const ui = t(lang);
-
-		if (results.length === 0) {
-			await sendOrEdit(ctx, loadingMsg, ui.errors.noResults(word), {
-				parse_mode: "HTML",
-			});
-			return;
-		}
-
-		const { exact, suggestions } = findExactMatches(results, word);
-
-		if (exact.length === 0) {
-			const keyboard = new InlineKeyboard();
-			for (const s of suggestions) keyboard.text(s.word, `s:${s.word}`).row();
-			await sendOrEdit(ctx, loadingMsg, ui.errors.noExactMatch(word), {
-				parse_mode: "HTML",
-				reply_markup: keyboard,
-			});
-			return;
-		}
-
-		if (exact.length === 1) {
-			const exactMatch = exact[0];
-			if (!exactMatch) return;
-			const { message, docs } = await formatResultWithHanja(exactMatch, lang);
-			const resultMsg = await sendOrEdit(ctx, loadingMsg, message, {
-				parse_mode: "HTML",
-			});
-			await scheduleTranslationUpgrade(resultMsg, exactMatch, docs, lang);
-			return;
-		}
-
-		await sendOrEdit(ctx, loadingMsg, ui.errors.multipleMeanings(word), {
-			parse_mode: "HTML",
-			reply_markup: buildMeaningKeyboard(exact, lang),
-		});
-	}
-
-	async function runWordLookup(
-		ctx: Context,
-		word: string,
-		lang: Lang,
-	): Promise<void> {
-		await handleWordLookup(
-			ctx,
-			word,
-			async () => {
-				await ctx.replyWithChatAction("typing");
-				return ctx.reply(t(lang).loadingFrames[0]);
-			},
-			lang,
-		);
-	}
-
-	async function handleSingleHanja(
-		ctx: Context,
-		char: string,
-		lang: Lang,
-	): Promise<void> {
-		const docs = await lookupHanja(char);
-		const doc = docs[0];
-
-		if (!doc) {
-			await ctx.reply(t(lang).errors.noHanjaEntry(char), {
-				parse_mode: "HTML",
-			});
-			return;
-		}
-
-		const initialText = formatSingleHanjaCard(doc, lang);
-		const resultMsg = await ctx.reply(initialText, { parse_mode: "HTML" });
-
-		const examples = await lookupHanjaExamples(char, lang);
-		if (examples.length === 0) {
-			return;
-		}
-
-		const upgradedText = formatSingleHanjaCard(
-			doc,
-			lang,
-			t(lang).hanjaWordActionsHeader,
-		);
-
-		try {
-			await ctx.api.editMessageText(
-				resultMsg.chat.id,
-				resultMsg.message_id,
-				upgradedText,
-				{
-					parse_mode: "HTML",
-					reply_markup: buildHanjaWordKeyboard(examples, lang),
-				},
-			);
-		} catch (error) {
-			console.error("Sigle-Hanja examples upgrade failed", error);
-		}
-	}
-
-	async function handleHangulHanjaList(
-		ctx: Context,
-		syllable: string,
-		page: number,
-		edit: boolean,
-		lang: Lang,
-	): Promise<void> {
-		const docs = await lookupHanjaByHangul(syllable);
-		if (docs.length === 0) {
-			const text = t(lang).errors.noHanjaForSyllable(syllable);
-			if (edit) await ctx.editMessageText(text, { parse_mode: "HTML" });
-			else await ctx.reply(text, { parse_mode: "HTML" });
-			return;
-		}
-		const totalPages = Math.ceil(docs.length / HANGUL_PAGE_SIZE);
-		const safePage = Math.max(0, Math.min(page, totalPages - 1));
-		const start = safePage * HANGUL_PAGE_SIZE;
-		const pageDocs = docs.slice(start, start + HANGUL_PAGE_SIZE);
-		const text = formatHangulHanjaPage(
-			syllable,
-			pageDocs,
-			safePage,
-			totalPages,
-			docs.length,
-			lang,
-		);
-		const keyboard = buildHangulHanjaKeyboard(
-			syllable,
-			safePage,
-			totalPages,
-			lang,
-		);
-		const opts = { parse_mode: "HTML" as const, reply_markup: keyboard };
-		if (edit) await ctx.editMessageText(text, opts);
-		else await ctx.reply(text, opts);
-	}
+	// DB/API access injected into the lookup flow (lookup.ts stays free of
+	// _generated imports and never reads process.env). scheduleUpgrade wires the
+	// module-level scheduler helper to the request-scoped actionCtx.
+	const deps: LookupDeps = {
+		getCached: (word) =>
+			actionCtx.runQuery(internal.words.getAllByWord, { word }),
+		saveExact: async (entries, lang) => {
+			await actionCtx.runMutation(internal.words.saveMany, { entries, lang });
+		},
+		getHanjaByChars: (chars) =>
+			actionCtx.runQuery(internal.hanja.getByCharacters, { characters: chars }),
+		getHanjaByHangul: (syllable) =>
+			actionCtx.runQuery(internal.hanja.getByHangul, { hangul: syllable }),
+		searchKrdict: (word, lang) => searchWord(krdictApiKey, word, lang),
+		lookupHanjaExamples,
+		scheduleUpgrade: (resultMsg, result, docs, lang) =>
+			scheduleTranslationUpgrade(actionCtx, resultMsg, result, docs, lang),
+	};
 
 	bot.command("start", async (ctx) => {
 		const userId = ctx.from?.id;
@@ -511,14 +149,12 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
 
 		const promptLang = pickPromptLang(ctx.from?.language_code);
 		await ctx.reply(t(promptLang).welcomePrompt, {
-			reply_markup: new InlineKeyboard()
-				.text("🇬🇧 English", "langinit:en")
-				.text("🇷🇺 Русский", "langinit:ru"),
+			reply_markup: buildLangInitKeyboard(),
 		});
 	});
 
 	bot.command("settings", async (ctx) => {
-		const lang = await getUserLang(ctx.from?.id);
+		const lang = await getUserLang(actionCtx, ctx.from?.id);
 		await ctx.reply(t(lang).settingsPrompt, {
 			reply_markup: buildSettingsKeyboard(),
 		});
@@ -529,13 +165,13 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
 		const text = ctx.message.text.trim();
 		const chars = [...text];
 		const [singleChar] = chars;
-		const lang = await getUserLang(ctx.from?.id);
+		const lang = await getUserLang(actionCtx, ctx.from?.id);
 
 		const ui = t(lang);
 		try {
 			// Rule 2: single CJK char
 			if (chars.length === 1 && singleChar && isHanja(singleChar)) {
-				await handleSingleHanja(ctx, singleChar, lang);
+				await handleSingleHanja(deps, ctx, singleChar, lang);
 				return;
 			}
 			// Rule 3: multiple CJK chars
@@ -555,6 +191,7 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
 			const match = text.match(/[\uAC00-\uD7AF]{2,}/);
 			if (match) {
 				await handleWordLookup(
+					deps,
 					ctx,
 					match[0],
 					() => ctx.reply(ui.loadingFrames[0]),
@@ -572,19 +209,26 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
 
 	bot.on("callback_query:data", async (ctx) => {
 		const data = ctx.callbackQuery.data;
-		const lang = await getUserLang(ctx.from?.id);
+		const lang = await getUserLang(actionCtx, ctx.from?.id);
 
 		try {
 			if (data.startsWith("s:")) {
-				await runWordLookup(ctx, data.slice(2), lang);
+				await runWordLookup(deps, ctx, data.slice(2), lang);
 			} else if (data.startsWith("wq:")) {
-				await runWordLookup(ctx, data.slice(3), lang);
+				await runWordLookup(deps, ctx, data.slice(3), lang);
 			} else if (data.startsWith("hh:") || data.startsWith("hp:")) {
 				const rest = data.slice(3);
 				const idx = rest.lastIndexOf(":");
 				const syllable = rest.slice(0, idx);
 				const page = Number(rest.slice(idx + 1)) || 0;
-				await handleHangulHanjaList(ctx, syllable, page, /*edit*/ true, lang);
+				await handleHangulHanjaList(
+					deps,
+					ctx,
+					syllable,
+					page,
+					/*edit*/ true,
+					lang,
+				);
 			} else if (data.startsWith("m:")) {
 				const tc = Number(data.slice(2));
 				const doc = await actionCtx.runQuery(internal.words.getByTargetCode, {
@@ -593,9 +237,19 @@ export const handleTelegramWebhook = httpAction(async (actionCtx, request) => {
 				if (!doc) {
 					await ctx.reply(t(lang).errors.staleCache);
 				} else {
-					const { message, docs } = await formatResultWithHanja(doc, lang);
+					const { message, docs } = await formatResultWithHanja(
+						deps,
+						doc,
+						lang,
+					);
 					const resultMsg = await ctx.reply(message, { parse_mode: "HTML" });
-					await scheduleTranslationUpgrade(resultMsg, doc, docs, lang);
+					await scheduleTranslationUpgrade(
+						actionCtx,
+						resultMsg,
+						doc,
+						docs,
+						lang,
+					);
 				}
 			} else if (data === "lang:en" || data === "lang:ru") {
 				const newLang: Lang = data === "lang:en" ? "en" : "ru";
